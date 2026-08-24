@@ -1012,7 +1012,8 @@ end
 -- serverHopSafe tự chọn server ít người (<= MAX_PLAYERS) rồi teleport.
 local SERVER_HOP_MAX_PLAYERS = 5
 local serverHopBusy = false
-local function serverHopSafe(reason)
+-- Global (không local) để callback Mics ServerHop ở dòng ~466 (trước nơi định nghĩa) tìm thấy được.
+function serverHopSafe(reason)
     if serverHopBusy then return end
     serverHopBusy = true
     warn("[iHH] serverHopSafe:", reason or "manual")
