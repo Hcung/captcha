@@ -4,7 +4,7 @@ game.Players.LocalPlayer.PlayerScripts.Scripts.Core["Idle Tracking"].Enabled = f
 game.Players.LocalPlayer.PlayerScripts.Scripts.Core["Server Closing"].Enabled = false
 
 local player = game.Players.LocalPlayer
-local iHHLib = loadstring(game:HttpGet(('https://raw.githubusercontent.com/TrungB2/Skid/BestSkid/Lib/TrungBLib.lua')))()
+local iHHLib = loadstring(game:HttpGet(('https://raw.githubusercontent.com/Hcung/captcha/refs/heads/main/ui.lua')))()
 local Window = iHHLib:MakeWindow({Name = "[iHH] 🐾 Script 🐾 (v0.42)", HidePremium = false, SaveConfig = true, ConfigFolder = "iHHCheat"})
 local Library = require(game:GetService("ReplicatedStorage"):WaitForChild("Library", 2000))
 
@@ -443,7 +443,14 @@ Mics:AddButton(
     {
         Name = "ServerHop",
         Callback = function()
-            loadstring(game:HttpGet("https://raw.githubusercontent.com/TrungB2/Skid/main/serverhop.lua"))()
+            local okHop, srcHop = pcall(function()
+                return game:HttpGet("https://raw.githubusercontent.com/TrungB2/Skid/main/serverhop.lua")
+            end)
+            if okHop and srcHop and srcHop ~= "" then
+                pcall(loadstring(srcHop))
+            else
+                warn("[iHH] ServerHop: Không tải được serverhop.lua (HttpGet fail)")
+            end
         end
     })
 iHHLib:Init()
@@ -1157,7 +1164,14 @@ function startDigging()
         elseif config.autoServerhop then
             if (os.clock() - lastChestFoundAt > 20) then -- Server hop if no chest is found for this many seconds
                 task.wait(0.01) -- Delay before server hops
-                loadstring(game:HttpGet("https://raw.githubusercontent.com/TrungB2/Skid/main/serverhop.lua"))()
+                local okHop, srcHop = pcall(function()
+                    return game:HttpGet("https://raw.githubusercontent.com/TrungB2/Skid/main/serverhop.lua")
+                end)
+                if okHop and srcHop and srcHop ~= "" then
+                    pcall(loadstring(srcHop))
+                else
+                    warn("[iHH] AutoServerhop: Không tải được serverhop.lua (HttpGet fail)")
+                end
             end
         end
 
