@@ -463,14 +463,7 @@ Mics:AddButton(
     {
         Name = "ServerHop",
         Callback = function()
-            local okHop, srcHop = pcall(function()
-                return game:HttpGet("https://raw.githubusercontent.com/TrungB2/Skid/main/serverhop.lua")
-            end)
-            if okHop and srcHop and srcHop ~= "" then
-                pcall(loadstring(srcHop))
-            else
-                warn("[iHH] ServerHop: Không tải được serverhop.lua (HttpGet fail)")
-            end
+            serverHopSafe("manual")
         end
     })
 iHHLib:Init()
@@ -656,7 +649,7 @@ function autoBalloon()
 
         if allPopped then
             if getgenv().hopWhenNoBalloon then
-                loadstring(game:HttpGet("https://raw.githubusercontent.com/fdvll/pet-simulator-99/main/serverhop.lua"))()
+                serverHopSafe("balloon all popped")
             end
             task.wait(1)
             continue
@@ -716,7 +709,7 @@ function autoBalloon()
         end
 
         if getgenv().config.hopWhenNoBalloon then
-            loadstring(game:HttpGet("https://raw.githubusercontent.com/TrungB2/Skid/BestSkid/Misc/serverhop.lua"))()
+            serverHopSafe("balloon hop flag")
         end
         
         hrp.Anchored = false
@@ -957,14 +950,7 @@ function autoSendMail()
             end
             if config.bucketHopWhenOut and v._am < 50 then
                 task.wait(1)
-                local okHop, srcHop = pcall(function()
-                    return game:HttpGet("https://raw.githubusercontent.com/TrungB2/Skid/main/serverhop.lua")
-                end)
-                if okHop and srcHop and srcHop ~= "" then
-                    pcall(loadstring(srcHop))
-                else
-                    warn("[iHH] Bucket hop: Không tải được serverhop.lua (HttpGet fail)")
-                end
+                serverHopSafe("bucket out")
             end
         end
 
@@ -1020,6 +1006,60 @@ function autoSendMail()
         task.wait(0.2)
     end
 end
+-- ===== Server hop an toàn (không phụ thuộc URL 404) =====
+-- Thay thế các loadstring(serverhop.lua) trước đây — những URL đó trả 404
+-- nên HttpGet ra nil → loadstring(nil) → "attempt to call a nil value".
+-- serverHopSafe tự chọn server ít người (<= MAX_PLAYERS) rồi teleport.
+local SERVER_HOP_MAX_PLAYERS = 5
+local serverHopBusy = false
+local function serverHopSafe(reason)
+    if serverHopBusy then return end
+    serverHopBusy = true
+    warn("[iHH] serverHopSafe:", reason or "manual")
+
+    local function getServersData()
+        local url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100"):format(game.PlaceId)
+        local httpService = game:GetService("HttpService")
+        if request then
+            local res = request({ Url = url, Method = "GET", Headers = { ["Content-Type"] = "application/json" } })
+            if res and res.Success and res.Body then
+                return httpService:JSONDecode(res.Body)
+            end
+        end
+        local body = httpService:HttpGet(url)
+        return httpService:JSONDecode(body)
+    end
+
+    local ok, data = pcall(getServersData)
+    if ok and data then
+        local best
+        for _, server in ipairs(data.data or {}) do
+            local playing = server.playing or 0
+            local maxPlayers = server.maxPlayers or 0
+            if server.id ~= game.JobId and playing < maxPlayers and playing <= SERVER_HOP_MAX_PLAYERS then
+                if not best or playing < (best.playing or 999) then
+                    best = server
+                end
+            end
+        end
+        if best then
+            print("[iHH] Hop →", best.id, "playing=", best.playing)
+            pcall(function()
+                game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, best.id, game:GetService("Players").LocalPlayer)
+            end)
+            return
+        end
+        warn("[iHH] Không tìm thấy server <=", SERVER_HOP_MAX_PLAYERS, "players, teleport random")
+    else
+        warn("[iHH] Không lấy được server list:", tostring(data))
+    end
+
+    pcall(function()
+        game:GetService("TeleportService"):Teleport(game.PlaceId, game:GetService("Players").LocalPlayer)
+    end)
+end
+-- ===== Server hop an toàn (end) =====
+
 -- Auto Dig
 function chestESP()
     if not game:GetService("Workspace").__THINGS.__INSTANCE_CONTAINER.Active:FindFirstChild("AdvancedDigsite") then    
@@ -1168,7 +1208,7 @@ function startDigging()
                 task.wait(10)
                 if not loaded and autoServerhop then
                     task.wait(5)
-                    loadstring(game:HttpGet("https://raw.githubusercontent.com/fdvll/pet-simulator-99/main/serverhop.lua"))()
+                    serverHopSafe("digsite not loaded after 10s")
                 end
             end)
     
@@ -1195,14 +1235,7 @@ function startDigging()
         elseif config.autoServerhop then
             if (os.clock() - lastChestFoundAt > 20) then -- Server hop if no chest is found for this many seconds
                 task.wait(0.01) -- Delay before server hops
-                local okHop, srcHop = pcall(function()
-                    return game:HttpGet("https://raw.githubusercontent.com/TrungB2/Skid/main/serverhop.lua")
-                end)
-                if okHop and srcHop and srcHop ~= "" then
-                    pcall(loadstring(srcHop))
-                else
-                    warn("[iHH] AutoServerhop: Không tải được serverhop.lua (HttpGet fail)")
-                end
+                serverHopSafe("no chest for 20s")
             end
         end
 
