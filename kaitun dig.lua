@@ -97,7 +97,7 @@ Dig:AddSection(
 local dig = Dig:AddToggle(
     {
         Name = "Auto Dig",
-        Default = true,
+        Default = false,
         Callback = function(v)
             config.autoDig = v
             spawn(startDigging)
