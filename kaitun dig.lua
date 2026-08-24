@@ -97,7 +97,7 @@ Dig:AddSection(
 local dig = Dig:AddToggle(
     {
         Name = "Auto Dig",
-        Default = false,
+        Default = true,
         Callback = function(v)
             config.autoDig = v
             spawn(startDigging)
@@ -1235,9 +1235,9 @@ function startDigging()
         if chest then
             lastChestFoundAt = os.clock() -- reset timer: still have a chest to dig
         elseif config.autoServerhop then
-            if (os.clock() - lastChestFoundAt > 20) then -- Server hop if no chest is found for this many seconds
+            if (os.clock() - lastChestFoundAt > 60) then -- Server hop if no chest is found for this many seconds
                 task.wait(0.01) -- Delay before server hops
-                serverHopSafe("no chest for 20s")
+                serverHopSafe("no chest for 60s")
             end
         end
 
