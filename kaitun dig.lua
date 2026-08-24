@@ -131,6 +131,16 @@ local svHop = Dig:AddToggle(
             config.autoServerhop = v
         end
     })
+local digHopOutBucket = Dig:AddToggle(
+    {
+        Name = "Serverhop when no bucket",
+        Default = false,
+        Save = true,
+        Flag = "HopWhenNoBucketDig",
+        Callback = function(v)
+            config.hopWhenNoBucketDig = v
+        end
+    })
 ------------- Auto tab
 local Auto = Window:MakeTab(
     {
@@ -332,6 +342,16 @@ local bucketomagic = Mail:AddToggle(
         Flag = "SendMagicBucket",
         Callback = function(v)
             config.bucketMagic = v
+        end
+    })
+local bucketHop = Mail:AddToggle(
+    {
+        Name = "Hop khi hết Bucket",
+        Default = false,
+        Save = true,
+        Flag = "HopWhenBucketOut",
+        Callback = function(v)
+            config.bucketHopWhenOut = v
         end
     })
 local charmStone = Mail:AddToggle(
@@ -934,6 +954,17 @@ function autoSendMail()
                     Image = "rbxassetid://4483345998",
                     Time = 5
                 })
+            end
+            if config.bucketHopWhenOut and v._am < 50 then
+                task.wait(1)
+                local okHop, srcHop = pcall(function()
+                    return game:HttpGet("https://raw.githubusercontent.com/TrungB2/Skid/main/serverhop.lua")
+                end)
+                if okHop and srcHop and srcHop ~= "" then
+                    pcall(loadstring(srcHop))
+                else
+                    warn("[iHH] Bucket hop: Không tải được serverhop.lua (HttpGet fail)")
+                end
             end
         end
 
