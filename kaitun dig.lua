@@ -106,7 +106,7 @@ local dig = Dig:AddToggle(
 local chest = Dig:AddToggle(    
     {
         Name = "Tp Chest",
-        Default = true,
+        Default = false,
         Save = true,
         Flag = "TpChest",
         Callback = function(v)
@@ -1235,9 +1235,9 @@ function startDigging()
         if chest then
             lastChestFoundAt = os.clock() -- reset timer: still have a chest to dig
         elseif config.autoServerhop then
-            if (os.clock() - lastChestFoundAt > 60) then -- Server hop if no chest is found for this many seconds
+            if (os.clock() - lastChestFoundAt > 20) then -- Server hop if no chest is found for this many seconds
                 task.wait(0.01) -- Delay before server hops
-                serverHopSafe("no chest for 60s")
+                serverHopSafe("no chest for 20s")
             end
         end
 
@@ -1276,3 +1276,19 @@ function startDigging()
 end
 
 spawn(antiAFK)
+
+-- Auto-start các loop theo config đã bật sẵn (sau khi mọi hàm đã định nghĩa)
+if config.autoDig then spawn(startDigging) end
+if config.tpChest then spawn(chestESP) end
+if config.autoFish then spawn(autoFish) end
+if config.autoFishNor then spawn(autoFishNor) end
+if config.autoHiddenPresent then spawn(autoHiddenPresent) end
+if config.autoBalloon then spawn(autoBalloon) end
+if config.autoTap then spawn(autoTap) end
+if config.autoFruit then spawn(autoFruits) end
+if config.autoClaimReward then spawn(autoClaimReward) end
+if config.autoCollectBag then spawn(autoCollectBag) end
+if config.autoClaimMail then spawn(autoClaimMail) end
+if config.autoCraft then spawn(autoCraft) end
+if config.autoTNT then spawn(autoTNT) end
+if config.autoBundleGiftBag then spawn(autoBundle) end
