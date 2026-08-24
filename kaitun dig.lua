@@ -97,7 +97,7 @@ Dig:AddSection(
 local dig = Dig:AddToggle(
     {
         Name = "Auto Dig",
-        Default = false,
+        Default = true,
         Callback = function(v)
             config.autoDig = v
             spawn(startDigging)
@@ -106,7 +106,7 @@ local dig = Dig:AddToggle(
 local chest = Dig:AddToggle(    
     {
         Name = "Tp Chest",
-        Default = false,
+        Default = true,
         Save = true,
         Flag = "TpChest",
         Callback = function(v)
@@ -463,7 +463,7 @@ Mics:AddButton(
     {
         Name = "ServerHop",
         Callback = function()
-            serverHopSafe("manual")
+            pcall(serverHopSafe, "manual")
         end
     })
 iHHLib:Init()
@@ -1033,6 +1033,7 @@ function serverHopSafe(reason)
 
     local ok, data = pcall(getServersData)
     if ok and data then
+        print("[iHH] serverHopSafe got server list, examining", #(data.data or {}), "servers")
         local best
         for _, server in ipairs(data.data or {}) do
             local playing = server.playing or 0
