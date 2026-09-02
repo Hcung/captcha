@@ -134,7 +134,7 @@ local svHop = Dig:AddToggle(
 local digHopOutBucket = Dig:AddToggle(
     {
         Name = "Serverhop when no bucket",
-        Default = true,
+        Default = false,
         Save = true,
         Flag = "HopWhenNoBucketDig",
         Callback = function(v)
