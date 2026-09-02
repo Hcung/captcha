@@ -125,7 +125,7 @@ local svHop = Dig:AddToggle(
     {
         Name = "Serverhop when no chest left",
         Default = false,
-        Save = true,
+        Save = false,
         Flag = "HopWhenNoChest",
         Callback = function(v)
             config.autoServerhop = v
@@ -135,7 +135,7 @@ local digHopOutBucket = Dig:AddToggle(
     {
         Name = "Serverhop when no bucket",
         Default = false,
-        Save = true,
+        Save = false,
         Flag = "HopWhenNoBucketDig",
         Callback = function(v)
             config.hopWhenNoBucketDig = v
