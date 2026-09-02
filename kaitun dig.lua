@@ -97,7 +97,7 @@ Dig:AddSection(
 local dig = Dig:AddToggle(
     {
         Name = "Auto Dig",
-        Default = true,
+        Default = false,
         Callback = function(v)
             config.autoDig = v
             spawn(startDigging)
@@ -1006,61 +1006,28 @@ function autoSendMail()
         task.wait(0.2)
     end
 end
--- ===== Server hop an toàn (không phụ thuộc URL 404) =====
--- Thay thế các loadstring(serverhop.lua) trước đây — những URL đó trả 404
--- nên HttpGet ra nil → loadstring(nil) → "attempt to call a nil value".
--- serverHopSafe tự chọn server ít người (<= MAX_PLAYERS) rồi teleport.
-local SERVER_HOP_MAX_PLAYERS = 5
-local serverHopBusy = false
--- Global (không local) để callback Mics ServerHop ở dòng ~466 (trước nơi định nghĩa) tìm thấy được.
 function serverHopSafe(reason)
-    if serverHopBusy then return end
-    serverHopBusy = true
-    warn("[iHH] serverHopSafe:", reason or "manual")
+    local Http = game:GetService("HttpService")
+    local TPS = game:GetService("TeleportService")
+    local Api = "https://games.roblox.com/v1/games/"
 
-    local function getServersData()
-        local url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100"):format(game.PlaceId)
-        local httpService = game:GetService("HttpService")
-        if request then
-            local res = request({ Url = url, Method = "GET", Headers = { ["Content-Type"] = "application/json" } })
-            if res and res.Success and res.Body then
-                return httpService:JSONDecode(res.Body)
-            end
-        end
-        local body = httpService:HttpGet(url)
-        return httpService:JSONDecode(body)
+    local _place = game.PlaceId
+    local _servers = Api.._place.."/servers/Public?sortOrder=Asc&limit=100"
+
+    local function ListServers(cursor)
+        local Raw = game:HttpGet(_servers .. ((cursor and "&cursor="..cursor) or ""))
+        return Http:JSONDecode(Raw)
     end
 
-    local ok, data = pcall(getServersData)
-    if ok and data then
-        print("[iHH] serverHopSafe got server list, examining", #(data.data or {}), "servers")
-        local best
-        for _, server in ipairs(data.data or {}) do
-            local playing = server.playing or 0
-            local maxPlayers = server.maxPlayers or 0
-            if server.id ~= game.JobId and playing < maxPlayers and playing <= SERVER_HOP_MAX_PLAYERS then
-                if not best or playing < (best.playing or 999) then
-                    best = server
-                end
-            end
-        end
-        if best then
-            print("[iHH] Hop →", best.id, "playing=", best.playing)
-            pcall(function()
-                game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, best.id, game:GetService("Players").LocalPlayer)
-            end)
-            return
-        end
-        warn("[iHH] Không tìm thấy server <=", SERVER_HOP_MAX_PLAYERS, "players, teleport random")
-    else
-        warn("[iHH] Không lấy được server list:", tostring(data))
-    end
+    local Server, Next
+    repeat
+        local Servers = ListServers(Next)
+        Server = Servers.data[1]
+        Next = Servers.nextPageCursor
+    until Server
 
-    pcall(function()
-        game:GetService("TeleportService"):Teleport(game.PlaceId, game:GetService("Players").LocalPlayer)
-    end)
+    TPS:TeleportToPlaceInstance(_place, Server.id, game.Players.LocalPlayer)
 end
--- ===== Server hop an toàn (end) =====
 
 -- Auto Dig
 function chestESP()
@@ -1235,9 +1202,9 @@ function startDigging()
         if chest then
             lastChestFoundAt = os.clock() -- reset timer: still have a chest to dig
         elseif config.autoServerhop then
-            if (os.clock() - lastChestFoundAt > 60) then -- Server hop if no chest is found for this many seconds
+            if (os.clock() - lastChestFoundAt > 20) then -- Server hop if no chest is found for this many seconds
                 task.wait(0.01) -- Delay before server hops
-                serverHopSafe("no chest for 60s")
+                serverHopSafe("no chest for 20s")
             end
         end
 
