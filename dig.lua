@@ -1130,19 +1130,14 @@ local function findMagicBlock()
     local magicBlock = nil
     local playerPosition = game.Players.LocalPlayer.Character.HumanoidRootPart.Position
     for _, v in pairs(game.Workspace["__THINGS"].__INSTANCE_CONTAINER.Active.AdvancedDigsite.Important.ActiveBlocks:GetChildren()) do
-        for _, part in pairs(v:GetChildren()) do
-            if part.Name == "sparkles" then
-                if v:IsA("BasePart") then
-                    local magnitude = (playerPosition - v.Position).Magnitude
-                    if magnitude <= dist and playerPosition.Y > v.Position.Y then
-                        dist = magnitude
-                        magicBlock = v.CFrame -- Change here to store the CFrame of the magic block
-                    end
-                end
+        if v:IsA("BasePart") and v:FindFirstChild("sparkles") then
+            local magnitude = (playerPosition - v.Position).Magnitude
+            if magnitude <= dist and playerPosition.Y > v.Position.Y then
+                dist = magnitude
+                magicBlock = v
             end
         end
     end
-
     return magicBlock
 end
 local function getPatternFarm()
@@ -1271,9 +1266,9 @@ function startDigging()
             game.Players.LocalPlayer.Character:WaitForChild("HumanoidRootPart").CFrame = chest.Top.CFrame
             game:GetService("ReplicatedStorage").Network:WaitForChild("Instancing_FireCustomFromClient"):FireServer("AdvancedDigsite", "DigChest", chest:GetAttribute('Coord'))
             wait(0.001)
-        elseif block and magicBlockCFrame ~= nil then
-            game.Players.LocalPlayer.Character:WaitForChild("HumanoidRootPart").CFrame = magicBlockCFrame
-            game:GetService("ReplicatedStorage").Network:WaitForChild("Instancing_FireCustomFromClient"):FireServer("AdvancedDigsite", "DigBlock", block:GetAttribute('Coord'))
+        elseif magicBlockCFrame and block then
+            game.Players.LocalPlayer.Character:WaitForChild("HumanoidRootPart").CFrame = magicBlockCFrame.CFrame
+            game:GetService("ReplicatedStorage").Network:WaitForChild("Instancing_FireCustomFromClient"):FireServer("AdvancedDigsite", "DigBlock", magicBlockCFrame:GetAttribute('Coord'))
             foundSparkles = true
             task.wait(0.001)
         elseif block then
