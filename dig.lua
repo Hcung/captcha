@@ -70,6 +70,17 @@ local fish = FastFish:AddToggle(
             spawn(autoFish)
         end
     })
+local deeppool = FastFish:AddToggle(
+    {
+        Name = "Auto DeepPool (Req Fishing Rank 30+)",
+        Default = false,
+        Save = true,
+        Flag = "AutoDeepPool",
+        Callback = function(v)
+            config.autoDeepPool = v
+            spawn(autoFishDeepPool)
+        end
+    })
 FastFish:AddSection(
     {
         Name = "Auto Normal Fishing"
@@ -97,7 +108,7 @@ Dig:AddSection(
 local dig = Dig:AddToggle(
     {
         Name = "Auto Dig",
-        Default = true,
+        Default = false,
         Callback = function(v)
             config.autoDig = v
             spawn(startDigging)
@@ -106,7 +117,7 @@ local dig = Dig:AddToggle(
 local chest = Dig:AddToggle(    
     {
         Name = "Tp Chest",
-        Default = true,
+        Default = false,
         Save = true,
         Flag = "TpChest",
         Callback = function(v)
@@ -124,7 +135,7 @@ local fpsDig = Dig:AddButton(
 local svHop = Dig:AddToggle(
     {
         Name = "Serverhop when no chest left",
-        Default = true,
+        Default = false,
         Save = true,
         Flag = "HopWhenNoChest",
         Callback = function(v)
@@ -627,7 +638,73 @@ function autoFish()
         task.wait()
     end
 end
--- Auto Balloon
+function autoFishDeepPool()
+    local Library = require(game:GetService("ReplicatedStorage"):WaitForChild("Library", 2000))
+    local Level = require(game.ReplicatedStorage.Library.Client.MasteryCmds)
+    local fish = require(game.ReplicatedStorage.Library.Directory.Mastery)
+
+    while task.wait() and config.autoDeepPool do
+        local FishingRank = Level.GetLevel(fish.Fishing)
+
+        if FishingRank < 30 then
+            print('[iHH] Fishing Rank < 30, cannot use DeepPool')
+            task.wait(5)
+            continue
+        end
+
+        if not game:GetService("Workspace").__THINGS.__INSTANCE_CONTAINER.Active:FindFirstChild("AdvancedFishing") then
+            game.Players.LocalPlayer.Character:WaitForChild("HumanoidRootPart").CFrame = game:GetService("Workspace").__THINGS.Instances.AdvancedFishing.Teleports.Enter.CFrame
+            task.wait(2)
+        end
+
+        local deepPool = nil
+        pcall(function()
+            local interactable = game:GetService("Workspace").__THINGS.__INSTANCE_CONTAINER.Active.AdvancedFishing:FindFirstChild("Interactable")
+            if interactable then
+                for _, instance in pairs(interactable:GetChildren()) do
+                    if instance.Name == "DeepPool" then
+                        deepPool = instance
+                        break
+                    end
+                end
+            end
+        end)
+
+        local castVector
+        if deepPool then
+            print('[iHH] Fishing on DeepPool')
+            castVector = Vector3.new(deepPool.Position.X + math.random(-4.75, 4.75), deepPool.Position.Y, deepPool.Position.Z + math.random(-4.75, 4.75))
+        else
+            print('[iHH] DeepPool not found, using default position')
+            castVector = Vector3.new(1465.877685546875 + math.random(-20, 50), 61.62495040893555, -4455.58447265625 + math.random(-20, 50))
+        end
+
+        game:GetService("ReplicatedStorage").Network.Instancing_FireCustomFromClient:FireServer("AdvancedFishing", "RequestCast", castVector)
+        task.wait(2.5)
+
+        game:GetService("ReplicatedStorage").Network.Instancing_FireCustomFromClient:FireServer("AdvancedFishing", "RequestReel")
+
+        repeat
+            task.wait()
+
+            local hasFishingLine = false
+            for _, descendant in pairs(game.Players.LocalPlayer.Character:GetDescendants()) do
+                if descendant.Name == "FishingLine" then
+                    hasFishingLine = true
+                    break
+                end
+            end
+
+            game:GetService("ReplicatedStorage").Network.Instancing_FireCustomFromClient:FireServer("AdvancedFishing", "RequestReel")
+            if not hasFishingLine then
+                break
+            end
+
+            game:GetService("ReplicatedStorage").Network.Instancing_InvokeCustomFromClient:InvokeServer("AdvancedFishing", "Clicked")
+        until not hasFishingLine
+        task.wait()
+    end
+end
 function autoBalloon()
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
     local hrp = player.Character.HumanoidRootPart
@@ -1256,9 +1333,9 @@ function startDigging()
         if chest then
             lastChestFoundAt = os.clock() -- reset timer: still have a chest to dig
         elseif config.autoServerhop then
-            if (os.clock() - lastChestFoundAt > 45) then -- Server hop if no chest is found for this many seconds
+            if (os.clock() - lastChestFoundAt > 60) then -- Server hop if no chest is found for this many seconds
                 task.wait(0.01) -- Delay before server hops
-                serverHopSafe("no chest for 45s")
+                serverHopSafe("no chest for 60s")
             end
         end
 
