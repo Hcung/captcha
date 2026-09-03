@@ -108,7 +108,7 @@ Dig:AddSection(
 local dig = Dig:AddToggle(
     {
         Name = "Auto Dig",
-        Default = false,
+        Default = true,
         Callback = function(v)
             config.autoDig = v
             spawn(startDigging)
@@ -117,7 +117,7 @@ local dig = Dig:AddToggle(
 local chest = Dig:AddToggle(    
     {
         Name = "Tp Chest",
-        Default = false,
+        Default = true,
         Save = true,
         Flag = "TpChest",
         Callback = function(v)
@@ -135,7 +135,7 @@ local fpsDig = Dig:AddButton(
 local svHop = Dig:AddToggle(
     {
         Name = "Serverhop when no chest left",
-        Default = false,
+        Default = true,
         Save = true,
         Flag = "HopWhenNoChest",
         Callback = function(v)
