@@ -1,4 +1,5 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
@@ -14,9 +15,6 @@ local TARGET_PLACE_ID = 8737899170
 local HOP_TIME = 360
 local THREAD_COUNT = 2
 local DELAY_TIME = 0.01
-
-local SERVER_HOP_URL =
-    "https://raw.githubusercontent.com/Paule1248/Open-Source/refs/heads/main/Utils/Serverhop%20Low"
 
 local isWorking = true
 local hopDeadline = nil
@@ -37,7 +35,8 @@ local S_CR1, S_CR2, S_SC =
 
 -- =========================================================
 -- [ TRACK INVENTORY ]
--- Chi doc inventory truc tiep, khong quet de quy Item Box
+-- Chi doc item truc tiep trong category chi dinh.
+-- Khong quet de quy / khong doc noi dung Item Box.
 -- =========================================================
 
 local SaveModule = require(
@@ -119,7 +118,7 @@ end
 
 -- =========================================================
 -- [ SERVER HOP ]
--- Sau 360s, tai va chay script Serverhop Low
+-- Het 360 giay -> chay truc tiep full loadstring
 -- =========================================================
 
 local function FastServerHop()
@@ -134,25 +133,12 @@ local function FastServerHop()
         RunService:Set3dRenderingEnabled(true)
     end)
 
-    print("[ServerHop] Het 360 giay. Dang chay Serverhop Low...")
+    print("[ServerHop] Het 360 giay, dang chay Serverhop Low...")
 
     local ok, err = pcall(function()
-        local source = game:HttpGet(SERVER_HOP_URL)
-
-        assert(
-            type(source) == "string" and #source > 0,
-            "Khong tai duoc source Serverhop Low"
-        )
-
-        local runScript, compileErr = loadstring(source)
-
-        assert(
-            type(runScript) == "function",
-            "Khong compile duoc Serverhop Low: "
-                .. tostring(compileErr)
-        )
-
-        runScript()
+        loadstring(game:HttpGet(
+            'https://raw.githubusercontent.com/Paule1248/Open-Source/refs/heads/main/Utils/Serverhop%20Low'
+        ))()
     end)
 
     if not ok then
@@ -162,6 +148,7 @@ end
 
 -- =========================================================
 -- [ UI ]
+-- Dung PlayerGui de tuong thich voi Real Executor
 -- =========================================================
 
 pcall(function()
@@ -210,7 +197,7 @@ ScreenGui.Parent = PlayerGui
 spawn(function()
     wait(5)
 
-    -- Bat dau tinh 360 giay sau thoi gian khoi dong
+    -- Bat dau tinh thoi gian sau khi khoi dong
     hopDeadline = tick() + HOP_TIME
 
     pcall(function()
@@ -233,7 +220,7 @@ spawn(function()
         end
     end)
 
-    -- Het 360 giay thi chay Serverhop Low
+    -- Het 360 giay thi chay full loadstring Serverhop Low
     task.delay(HOP_TIME, FastServerHop)
 
     -- Cac luong burst
