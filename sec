@@ -1,13 +1,12 @@
-
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
-local CoreGui = game:GetService("CoreGui")
 local RunService = game:GetService("RunService")
 
 local Network = ReplicatedStorage:WaitForChild("Network")
 local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 -- [ CAU HINH ]
 local TARGET_PLACE_ID = 8737899170
@@ -32,8 +31,8 @@ local S_CR1, S_CR2, S_SC =
 
 -- =========================================================
 -- [ TRACK INVENTORY ]
--- Chi doc item truc tiep trong inventory.
--- Khong quet de quy / khong doc vat pham ben trong Item Box.
+-- Chi doc item truc tiep trong Misc / Charm / Potion.
+-- Khong quet de quy va khong doc noi dung Item Box.
 -- =========================================================
 
 local SaveModule = require(
@@ -42,11 +41,19 @@ local SaveModule = require(
         :WaitForChild("Save")
 )
 
-local TRACK_IDS = {
-    ["Secret Key"] = "Secret Key",
-    ["Royalty Charm"] = "Royalty",
-    ["Overload Charm"] = "Overload",
-    ["The Cocktail"] = "The Cocktail",
+local TRACK_CATEGORIES = {
+    Misc = {
+        ["Secret Key"] = "Secret Key",
+    },
+
+    Charm = {
+        ["Royalty Charm"] = "Royalty",
+        ["Overload Charm"] = "Overload",
+    },
+
+    Potion = {
+        ["The Cocktail"] = "The Cocktail",
+    },
 }
 
 local function getTrackCounts()
@@ -57,7 +64,7 @@ local function getTrackCounts()
         ["The Cocktail"] = 0,
     }
 
-    local ok, result = pcall(function()
+    local ok, loaded = pcall(function()
         local data = SaveModule.Get()
         local inventory = data and data.Inventory
 
@@ -65,24 +72,19 @@ local function getTrackCounts()
             return false
         end
 
-        for category, items in pairs(inventory) do
-            local categoryName = tostring(category):lower()
+        for category, targets in pairs(TRACK_CATEGORIES) do
+            local items = inventory[category]
 
-            -- Bo qua category Item Box neu co
-            if not categoryName:find("itembox", 1, true)
-                and not categoryName:find("item box", 1, true)
-                and type(items) == "table" then
-
-                -- Chi kiem tra item truc tiep, khong quet nested table
+            if type(items) == "table" then
+                -- Chi duyet cac item truc tiep trong category
                 for _, item in pairs(items) do
                     if type(item) == "table" then
                         local id = tostring(item.id or "")
 
-                        for displayName, targetId in pairs(TRACK_IDS) do
+                        for displayName, targetId in pairs(targets) do
                             if id == targetId then
-                                counts[displayName] =
-                                    counts[displayName]
-                                    + (tonumber(item._am) or 1)
+                                counts[displayName] +=
+                                    tonumber(item._am) or 1
                             end
                         end
                     end
@@ -93,7 +95,7 @@ local function getTrackCounts()
         return true
     end)
 
-    if not ok or result ~= true then
+    if not ok or loaded ~= true then
         return counts, false
     end
 
@@ -144,10 +146,12 @@ end
 
 -- =========================================================
 -- [ UI ]
+-- Dung PlayerGui de tuong thich voi Real Executor
 -- =========================================================
 
 pcall(function()
-    local oldGui = CoreGui:FindFirstChild("RAMResetTrackUI")
+    local oldGui = PlayerGui:FindFirstChild("RAMResetTrackUI")
+
     if oldGui then
         oldGui:Destroy()
     end
@@ -156,11 +160,9 @@ end)
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "RAMResetTrackUI"
 ScreenGui.ResetOnSpawn = false
-ScreenGui.Parent = CoreGui
 
 local Label = Instance.new("TextLabel")
 Label.Name = "TrackLabel"
-Label.Parent = ScreenGui
 Label.Size = UDim2.new(0, 330, 0, 170)
 Label.Position = UDim2.new(0.02, 0, 0.05, 0)
 Label.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
@@ -172,6 +174,8 @@ Label.TextScaled = false
 Label.TextWrapped = false
 Label.TextXAlignment = Enum.TextXAlignment.Left
 Label.TextYAlignment = Enum.TextYAlignment.Top
+Label.Text = "RAM RESET MODE\nLoading inventory..."
+Label.Parent = ScreenGui
 
 local Padding = Instance.new("UIPadding")
 Padding.PaddingLeft = UDim.new(0, 10)
@@ -181,6 +185,8 @@ Padding.Parent = Label
 local Corner = Instance.new("UICorner")
 Corner.CornerRadius = UDim.new(0, 8)
 Corner.Parent = Label
+
+ScreenGui.Parent = PlayerGui
 
 -- =========================================================
 -- [ START ]
@@ -200,6 +206,7 @@ spawn(function()
     spawn(function()
         while isWorking do
             wait(30)
+
             pcall(function()
                 collectgarbage("collect")
             end)
@@ -209,7 +216,7 @@ spawn(function()
     -- Hen gio hop server
     task.delay(HOP_TIME, FastServerHop)
 
-    -- Chay cac luong burst
+    -- Cac luong burst
     for i = 1, THREAD_COUNT do
         spawn(function()
             while isWorking do
@@ -221,13 +228,13 @@ spawn(function()
 end)
 
 -- =========================================================
--- [ UI UPDATE + TRACK ]
+-- [ UI UPDATE + INVENTORY TRACK ]
 -- =========================================================
 
 spawn(function()
     local startTime = tick()
 
-    while isWorking do
+    while isWorking and ScreenGui.Parent do
         local timeLeft = math.max(
             0,
             math.floor(HOP_TIME - (tick() - startTime))
