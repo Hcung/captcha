@@ -1,0 +1,258 @@
+
+local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TeleportService = game:GetService("TeleportService")
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
+
+local Network = ReplicatedStorage:WaitForChild("Network")
+local LocalPlayer = Players.LocalPlayer
+
+-- [ CAU HINH ]
+local TARGET_PLACE_ID = 8737899170
+local HOP_TIME = 120
+local THREAD_COUNT = 2
+local DELAY_TIME = 0.02
+local isWorking = true
+
+local spawn = task.spawn
+local wait = task.wait
+
+local Unlock = Network.SecretRoom_Unlock
+local Enter = Network.Instancing_PlayerEnterInstance
+local Custom = Network.Instancing_InvokeCustomFromClient
+local Leave = Network.Instancing_PlayerLeaveInstance
+
+local Invk = Unlock.InvokeServer
+local Fire = Leave.FireServer
+
+local S_CR1, S_CR2, S_SC =
+    "Chest Roulette", "ChestRoulette", "SelectChest"
+
+-- =========================================================
+-- [ TRACK INVENTORY ]
+-- Chi doc item truc tiep trong inventory.
+-- Khong quet de quy / khong doc vat pham ben trong Item Box.
+-- =========================================================
+
+local SaveModule = require(
+    ReplicatedStorage:WaitForChild("Library")
+        :WaitForChild("Client")
+        :WaitForChild("Save")
+)
+
+local TRACK_IDS = {
+    ["Secret Key"] = "Secret Key",
+    ["Royalty Charm"] = "Royalty",
+    ["Overload Charm"] = "Overload",
+    ["The Cocktail"] = "The Cocktail",
+}
+
+local function getTrackCounts()
+    local counts = {
+        ["Secret Key"] = 0,
+        ["Royalty Charm"] = 0,
+        ["Overload Charm"] = 0,
+        ["The Cocktail"] = 0,
+    }
+
+    local ok, result = pcall(function()
+        local data = SaveModule.Get()
+        local inventory = data and data.Inventory
+
+        if type(inventory) ~= "table" then
+            return false
+        end
+
+        for category, items in pairs(inventory) do
+            local categoryName = tostring(category):lower()
+
+            -- Bo qua category Item Box neu co
+            if not categoryName:find("itembox", 1, true)
+                and not categoryName:find("item box", 1, true)
+                and type(items) == "table" then
+
+                -- Chi kiem tra item truc tiep, khong quet nested table
+                for _, item in pairs(items) do
+                    if type(item) == "table" then
+                        local id = tostring(item.id or "")
+
+                        for displayName, targetId in pairs(TRACK_IDS) do
+                            if id == targetId then
+                                counts[displayName] =
+                                    counts[displayName]
+                                    + (tonumber(item._am) or 1)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        return true
+    end)
+
+    if not ok or result ~= true then
+        return counts, false
+    end
+
+    return counts, true
+end
+
+-- =========================================================
+-- [ BURST ]
+-- =========================================================
+
+local function UltraBurstFire()
+    spawn(Invk, Unlock, S_CR1)
+    spawn(Invk, Enter, S_CR2)
+    spawn(Invk, Custom, S_CR2, S_SC, 2)
+    Fire(Leave, S_CR2)
+end
+
+-- =========================================================
+-- [ SERVER HOP ]
+-- =========================================================
+
+local function FastServerHop()
+    if not isWorking then
+        return
+    end
+
+    isWorking = false
+
+    RunService:Set3dRenderingEnabled(true)
+    wait(2)
+
+    print("Dang teleport toi Place ID: " .. TARGET_PLACE_ID)
+
+    local ok, err = pcall(function()
+        TeleportService:Teleport(TARGET_PLACE_ID, LocalPlayer)
+    end)
+
+    if not ok then
+        warn("[ServerHop] Teleport loi: " .. tostring(err))
+    end
+
+    task.delay(5, function()
+        pcall(function()
+            TeleportService:Teleport(TARGET_PLACE_ID, LocalPlayer)
+        end)
+    end)
+end
+
+-- =========================================================
+-- [ UI ]
+-- =========================================================
+
+pcall(function()
+    local oldGui = CoreGui:FindFirstChild("RAMResetTrackUI")
+    if oldGui then
+        oldGui:Destroy()
+    end
+end)
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "RAMResetTrackUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = CoreGui
+
+local Label = Instance.new("TextLabel")
+Label.Name = "TrackLabel"
+Label.Parent = ScreenGui
+Label.Size = UDim2.new(0, 330, 0, 170)
+Label.Position = UDim2.new(0.02, 0, 0.05, 0)
+Label.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+Label.BackgroundTransparency = 0.12
+Label.TextColor3 = Color3.fromRGB(0, 255, 255)
+Label.Font = Enum.Font.Code
+Label.TextSize = 16
+Label.TextScaled = false
+Label.TextWrapped = false
+Label.TextXAlignment = Enum.TextXAlignment.Left
+Label.TextYAlignment = Enum.TextYAlignment.Top
+
+local Padding = Instance.new("UIPadding")
+Padding.PaddingLeft = UDim.new(0, 10)
+Padding.PaddingTop = UDim.new(0, 8)
+Padding.Parent = Label
+
+local Corner = Instance.new("UICorner")
+Corner.CornerRadius = UDim.new(0, 8)
+Corner.Parent = Label
+
+-- =========================================================
+-- [ START ]
+-- =========================================================
+
+spawn(function()
+    wait(5)
+
+    RunService:Set3dRenderingEnabled(false)
+
+    pcall(function()
+        settings().Physics.PhysicsEnvironmentalThrottle =
+            Enum.EnviromentalPhysicsThrottle.Disabled
+    end)
+
+    -- Don rac dinh ky
+    spawn(function()
+        while isWorking do
+            wait(30)
+            pcall(function()
+                collectgarbage("collect")
+            end)
+        end
+    end)
+
+    -- Hen gio hop server
+    task.delay(HOP_TIME, FastServerHop)
+
+    -- Chay cac luong burst
+    for i = 1, THREAD_COUNT do
+        spawn(function()
+            while isWorking do
+                UltraBurstFire()
+                wait(DELAY_TIME)
+            end
+        end)
+    end
+end)
+
+-- =========================================================
+-- [ UI UPDATE + TRACK ]
+-- =========================================================
+
+spawn(function()
+    local startTime = tick()
+
+    while isWorking do
+        local timeLeft = math.max(
+            0,
+            math.floor(HOP_TIME - (tick() - startTime))
+        )
+
+        local counts, loaded = getTrackCounts()
+        local status = loaded and "LIVE" or "WAITING FOR DATA"
+
+        Label.Text = string.format(
+            "RAM RESET MODE [%s]\n" ..
+            "------------------------------\n" ..
+            "Secret Key:     %s\n" ..
+            "Royalty Charm:  %s\n" ..
+            "Overload Charm: %s\n" ..
+            "The Cocktail:   %s\n" ..
+            "------------------------------\n" ..
+            "NEXT PLACE HOP: %ds",
+            status,
+            tostring(counts["Secret Key"]),
+            tostring(counts["Royalty Charm"]),
+            tostring(counts["Overload Charm"]),
+            tostring(counts["The Cocktail"]),
+            timeLeft
+        )
+
+        wait(1)
+    end
+end)
