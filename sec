@@ -1,6 +1,4 @@
-local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
@@ -8,12 +6,20 @@ local Network = ReplicatedStorage:WaitForChild("Network")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
--- [ CAU HINH ]
+-- =========================================================
+-- [ CONFIG ]
+-- =========================================================
+
 local TARGET_PLACE_ID = 8737899170
-local HOP_TIME = 120
+local HOP_TIME = 360
 local THREAD_COUNT = 2
-local DELAY_TIME = 0.02
+local DELAY_TIME = 0.01
+
+local SERVER_HOP_URL =
+    "https://raw.githubusercontent.com/Paule1248/Open-Source/refs/heads/main/Utils/Serverhop%20Low"
+
 local isWorking = true
+local hopDeadline = nil
 
 local spawn = task.spawn
 local wait = task.wait
@@ -31,8 +37,7 @@ local S_CR1, S_CR2, S_SC =
 
 -- =========================================================
 -- [ TRACK INVENTORY ]
--- Chi doc item truc tiep trong Misc / Charm / Potion.
--- Khong quet de quy va khong doc noi dung Item Box.
+-- Chi doc inventory truc tiep, khong quet de quy Item Box
 -- =========================================================
 
 local SaveModule = require(
@@ -76,7 +81,6 @@ local function getTrackCounts()
             local items = inventory[category]
 
             if type(items) == "table" then
-                -- Chi duyet cac item truc tiep trong category
                 for _, item in pairs(items) do
                     if type(item) == "table" then
                         local id = tostring(item.id or "")
@@ -115,6 +119,7 @@ end
 
 -- =========================================================
 -- [ SERVER HOP ]
+-- Sau 360s, tai va chay script Serverhop Low
 -- =========================================================
 
 local function FastServerHop()
@@ -122,31 +127,41 @@ local function FastServerHop()
         return
     end
 
+    -- Dung cac luong burst truoc khi hop
     isWorking = false
 
-    RunService:Set3dRenderingEnabled(true)
-    wait(2)
+    pcall(function()
+        RunService:Set3dRenderingEnabled(true)
+    end)
 
-    print("Dang teleport toi Place ID: " .. TARGET_PLACE_ID)
+    print("[ServerHop] Het 360 giay. Dang chay Serverhop Low...")
 
     local ok, err = pcall(function()
-        TeleportService:Teleport(TARGET_PLACE_ID, LocalPlayer)
+        local source = game:HttpGet(SERVER_HOP_URL)
+
+        assert(
+            type(source) == "string" and #source > 0,
+            "Khong tai duoc source Serverhop Low"
+        )
+
+        local runScript, compileErr = loadstring(source)
+
+        assert(
+            type(runScript) == "function",
+            "Khong compile duoc Serverhop Low: "
+                .. tostring(compileErr)
+        )
+
+        runScript()
     end)
 
     if not ok then
-        warn("[ServerHop] Teleport loi: " .. tostring(err))
+        warn("[ServerHop] Loi khi chay Serverhop Low: " .. tostring(err))
     end
-
-    task.delay(5, function()
-        pcall(function()
-            TeleportService:Teleport(TARGET_PLACE_ID, LocalPlayer)
-        end)
-    end)
 end
 
 -- =========================================================
 -- [ UI ]
--- Dung PlayerGui de tuong thich voi Real Executor
 -- =========================================================
 
 pcall(function()
@@ -163,7 +178,7 @@ ScreenGui.ResetOnSpawn = false
 
 local Label = Instance.new("TextLabel")
 Label.Name = "TrackLabel"
-Label.Size = UDim2.new(0, 330, 0, 170)
+Label.Size = UDim2.new(0, 350, 0, 175)
 Label.Position = UDim2.new(0.02, 0, 0.05, 0)
 Label.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
 Label.BackgroundTransparency = 0.12
@@ -195,7 +210,12 @@ ScreenGui.Parent = PlayerGui
 spawn(function()
     wait(5)
 
-    RunService:Set3dRenderingEnabled(false)
+    -- Bat dau tinh 360 giay sau thoi gian khoi dong
+    hopDeadline = tick() + HOP_TIME
+
+    pcall(function()
+        RunService:Set3dRenderingEnabled(false)
+    end)
 
     pcall(function()
         settings().Physics.PhysicsEnvironmentalThrottle =
@@ -213,7 +233,7 @@ spawn(function()
         end
     end)
 
-    -- Hen gio hop server
+    -- Het 360 giay thi chay Serverhop Low
     task.delay(HOP_TIME, FastServerHop)
 
     -- Cac luong burst
@@ -232,26 +252,28 @@ end)
 -- =========================================================
 
 spawn(function()
-    local startTime = tick()
-
     while isWorking and ScreenGui.Parent do
-        local timeLeft = math.max(
-            0,
-            math.floor(HOP_TIME - (tick() - startTime))
-        )
+        local timeLeft = HOP_TIME
+
+        if hopDeadline then
+            timeLeft = math.max(
+                0,
+                math.ceil(hopDeadline - tick())
+            )
+        end
 
         local counts, loaded = getTrackCounts()
         local status = loaded and "LIVE" or "WAITING FOR DATA"
 
         Label.Text = string.format(
             "RAM RESET MODE [%s]\n" ..
-            "------------------------------\n" ..
+            "--------------------------------\n" ..
             "Secret Key:     %s\n" ..
             "Royalty Charm:  %s\n" ..
             "Overload Charm: %s\n" ..
             "The Cocktail:   %s\n" ..
-            "------------------------------\n" ..
-            "NEXT PLACE HOP: %ds",
+            "--------------------------------\n" ..
+            "NEXT SERVER HOP: %ds",
             status,
             tostring(counts["Secret Key"]),
             tostring(counts["Royalty Charm"]),
