@@ -24,7 +24,7 @@ local ROOM = "Crystal Key Castle"
 local INSTANCE = "CrystalKeyCastle"
 local WHEEL = "CrystalKeyWheel"
 
-local THREADS = 3
+local THREADS = 4
 local DELAY = 0.01
 
 local running = true
