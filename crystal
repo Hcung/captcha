@@ -1,0 +1,206 @@
+pcall(function()
+    game:GetService("RunService"):Set3dRenderingEnabled(false)
+end)
+
+local RS = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local Network = RS:WaitForChild("Network")
+local LibraryRoot = RS:WaitForChild("Library")
+local SaveModule = require(LibraryRoot.Client.Save)
+local SpinnyWheelCmds = require(LibraryRoot.Client.SpinnyWheelCmds)
+
+local lp = Players.LocalPlayer
+local PlayerGui = lp:WaitForChild("PlayerGui")
+
+local Unlock = Network:WaitForChild("SecretRoom_Unlock")
+local Enter = Network:WaitForChild("Instancing_PlayerEnterInstance")
+local Leave = Network:WaitForChild("Instancing_PlayerLeaveInstance")
+
+-- =========================================================
+-- CONFIG
+-- =========================================================
+
+local ROOM = "Crystal Key Castle"
+local INSTANCE = "CrystalKeyCastle"
+local WHEEL = "CrystalKeyWheel"
+
+local THREADS = 3
+local DELAY = 0.01
+
+local running = true
+local spinCount = 0
+
+-- =========================================================
+-- INVENTORY TRACK
+-- Chi doc Misc truc tiep, khong quet Item Box
+-- =========================================================
+
+local TRACK_IDS = {
+    ["Secret Key"] = true,
+    ["Tech Key"] = true,
+    ["Crystal Key"] = true,
+    ["Crystal Key Lower Half"] = true,
+    ["Crystal Key Upper Half"] = true,
+}
+
+local function getItemAmounts()
+    local counts = {
+        ["Secret Key"] = 0,
+        ["Tech Key"] = 0,
+        ["Crystal Key"] = 0,
+        ["Crystal Key Lower Half"] = 0,
+        ["Crystal Key Upper Half"] = 0,
+    }
+
+    local ok = pcall(function()
+        local save = SaveModule.Get()
+        local inventory = save and save.Inventory
+        local misc = inventory and inventory.Misc
+
+        if type(misc) ~= "table" then
+            return
+        end
+
+        for _, item in pairs(misc) do
+            if type(item) == "table" then
+                local id = item.id
+
+                if TRACK_IDS[id] then
+                    counts[id] += tonumber(item._am) or 1
+                end
+            end
+        end
+    end)
+
+    return counts, ok
+end
+
+-- =========================================================
+-- GUI
+-- =========================================================
+
+pcall(function()
+    local oldGui = PlayerGui:FindFirstChild("CrystalKeyWheelStatus")
+    if oldGui then
+        oldGui:Destroy()
+    end
+end)
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "CrystalKeyWheelStatus"
+gui.ResetOnSpawn = false
+gui.Parent = PlayerGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(300, 235)
+frame.Position = UDim2.fromOffset(18, 120)
+frame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+frame.BackgroundTransparency = 0.08
+frame.BorderSizePixel = 0
+frame.Parent = gui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 14)
+corner.Parent = frame
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(130, 90, 255)
+stroke.Thickness = 2
+stroke.Parent = frame
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -20, 0, 34)
+title.Position = UDim2.fromOffset(10, 8)
+title.BackgroundTransparency = 1
+title.TextColor3 = Color3.fromRGB(225, 215, 255)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 18
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Text = "Crystal Key Wheel | FAST"
+title.Parent = frame
+
+local body = Instance.new("TextLabel")
+body.Size = UDim2.new(1, -20, 1, -50)
+body.Position = UDim2.fromOffset(10, 46)
+body.BackgroundTransparency = 1
+body.TextColor3 = Color3.fromRGB(245, 245, 255)
+body.Font = Enum.Font.Gotham
+body.TextSize = 15
+body.TextXAlignment = Enum.TextXAlignment.Left
+body.TextYAlignment = Enum.TextYAlignment.Top
+body.Parent = frame
+
+local function updateUI()
+    local counts, loaded = getItemAmounts()
+
+    body.Text = table.concat({
+        "Status: " .. (running and "Running" or "Stopped"),
+        "Threads: " .. THREADS,
+        "Delay: " .. tostring(DELAY),
+        "Spin success returns: " .. tostring(spinCount),
+        "Inventory: " .. (loaded and "Loaded" or "Unavailable"),
+        "",
+        "Secret Key: " ..
+            tostring(counts["Secret Key"]),
+        "Tech Key: " ..
+            tostring(counts["Tech Key"]),
+        "Crystal Key: " ..
+            tostring(counts["Crystal Key"]),
+        "Crystal Lower: " ..
+            tostring(counts["Crystal Key Lower Half"]),
+        "Crystal Upper: " ..
+            tostring(counts["Crystal Key Upper Half"]),
+    }, "\n")
+end
+
+task.spawn(function()
+    while gui.Parent do
+        pcall(updateUI)
+        task.wait(1)
+    end
+end)
+
+-- =========================================================
+-- BURST
+-- =========================================================
+
+local function burst()
+    task.spawn(function()
+        pcall(function()
+            Unlock:InvokeServer(ROOM)
+        end)
+    end)
+
+    task.spawn(function()
+        pcall(function()
+            Enter:InvokeServer(INSTANCE)
+        end)
+    end)
+
+    task.spawn(function()
+        local ok, result = pcall(function()
+            return SpinnyWheelCmds.RequestSpin(WHEEL)
+        end)
+
+        if ok and result then
+            spinCount += 1
+        end
+    end)
+
+    pcall(function()
+        Leave:FireServer(INSTANCE)
+    end)
+end
+
+-- =========================================================
+-- WORKERS
+-- =========================================================
+
+for i = 1, THREADS do
+    task.spawn(function()
+        while running do
+            burst()
+            task.wait(DELAY)
+        end
+    end)
+end
