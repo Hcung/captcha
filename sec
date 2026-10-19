@@ -13,7 +13,7 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 local TARGET_PLACE_ID = 8737899170
 local HOP_TIME = 600
-local THREAD_COUNT = 2
+local THREAD_COUNT = 3
 local DELAY_TIME = 0.01
 
 local isWorking = true
