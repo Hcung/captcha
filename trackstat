@@ -1,0 +1,548 @@
+-- TrackStat Lua Client v5
+-- HTTP via executor request() (same pattern as egg.txt), not HttpService.
+-- Thay đổi so với v4:
+--   * đọc body response -> phân biệt ingested / deleted(tombstone) / stale / invalid
+--   * KHÔNG còn im lặng nuốt lỗi 403 (sai API key) hay account đã bị xóa trên server
+--   * queue trên disk là mảng (giữ tối đa QUEUE_MAX), không ghi đè mất bản cũ
+--   * không double-count item giữa top-level và _uq.ct / ct
+--   * gửi thêm `coins`, ts an toàn, variant tính 1 lần
+--   * config override được qua getgenv().TrackStatConfig
+
+repeat task.wait() until game:IsLoaded()
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
+if not LocalPlayer then
+    warn("[TRACKSTAT] LocalPlayer unavailable; aborting safely.")
+    return
+end
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+
+local okSave, SaveModule = pcall(function()
+    return require(ReplicatedStorage:WaitForChild("Library"):WaitForChild("Client"):WaitForChild("Save"))
+end)
+if not okSave or not SaveModule then
+    warn("[TRACKSTAT] Save module unavailable; aborting safely.")
+    return
+end
+
+local Config = {
+    -- Đổi thành domain server của bạn. Tunnel trycloudflare cũ đã chết.
+    WEB_SERVER = "http://localhost:3001",
+    API_KEY = "311005",
+    UPLOAD_INTERVAL = 30,
+    AUTO_UPLOAD = true,
+    LOCAL_LOGGING = true,
+    -- gửi restore_deleted=true để tự bỏ tombstone khi account từng bị xóa trên web
+    AUTO_RESTORE = true,
+    QUEUE_MAX = 20,
+    TIMEOUT = 8,
+}
+
+if type(getgenv().TrackStatConfig) == "table" then
+    for k, v in pairs(getgenv().TrackStatConfig) do
+        if Config[k] ~= nil then Config[k] = v end
+    end
+end
+
+Config.WEB_SERVER = tostring(Config.WEB_SERVER):gsub("/+$", "")
+
+local QUEUE_PATH = "trackstat_queue_" .. LocalPlayer.Name .. ".json"
+
+local RetryQueue = {}
+local UploadCount = 0
+local FailCount = 0
+local StopReason = nil   -- "deleted" | "auth" | nil
+
+local function log(msg, level)
+    level = level or "info"
+    local prefixes = { info = "[OK]", warn = "[WARN]", error = "[ERROR]" }
+    print(string.format("[TRACKSTAT] %s %s", prefixes[level] or "[*]", msg))
+end
+
+local function formatNumber(n)
+    n = tonumber(n) or 0
+    if n >= 1e9 then return string.format("%.2fB", n / 1e9) end
+    if n >= 1e6 then return string.format("%.2fM", n / 1e6) end
+    if n >= 1e3 then return string.format("%.2fK", n / 1e3) end
+    return tostring(n)
+end
+
+local function nowMs()
+    local ok, ms = pcall(function() return DateTime.now().UnixTimestampMillis end)
+    if ok and type(ms) == "number" then return ms end
+    return os.time() * 1000
+end
+
+-- ---------- variant ----------
+local function getVariant(data)
+    if data.sh or data.Shiny then return "Shiny" end
+    if data.pt == 1 or data.gd or data.Gold then return "Gold" end
+    if data.pt == 2 or data.rb or data.Rainbow then return "Rainbow" end
+    return "Normal"
+end
+
+-- ---------- executor shims ----------
+local function getHttp()
+    return request
+        or http_request
+        or (syn and syn.request)
+        or (fluxus and fluxus.request)
+        or (http and http.request)
+end
+
+local function getWriteFile()
+    return writefile or (syn and syn.writefile) or (fluxus and fluxus.writefile)
+end
+
+local function getReadFile()
+    return readfile or (syn and syn.readfile) or (fluxus and fluxus.readfile)
+end
+
+-- ---------- inventory walking ----------
+-- Trả về iterator trên mọi item table trong inventory, mỗi table đúng 1 lần.
+-- `_uq.ct` / `ct` hay mirror lại item đã có ở top-level -> lọc bằng seen.
+local function eachItem(inv, onItem)
+    local seen = {}
+
+    local function scan(classItems, defaultCategory)
+        if type(classItems) ~= "table" then return end
+        for _, data in pairs(classItems) do
+            if type(data) == "table" and data.id ~= nil and not seen[data] then
+                seen[data] = true
+                onItem(data, defaultCategory)
+            end
+        end
+    end
+
+    for category, catItems in pairs(inv) do
+        if category ~= "Currency" and category ~= "_uq" and category ~= "ct" then
+            scan(catItems, category)
+        end
+    end
+
+    -- item unique/locked chỉ nằm trong _uq.ct hoặc ct
+    if type(inv._uq) == "table" then scan(inv._uq.ct, nil) end
+    scan(inv.ct, nil)
+end
+
+local function itemAmount(data)
+    return tonumber(data._am or data.am or data.amount or data.Amount or 1) or 1
+end
+
+local function aggregateItems(inv)
+    local aggregated = {}
+    eachItem(inv, function(data, category)
+        local variant = getVariant(data)
+        local id = tostring(data.id)
+        local key = tostring(category or "Unique") .. "|" .. id .. "|" .. variant
+        local entry = aggregated[key]
+        if not entry then
+            entry = { category = tostring(category or "Unique"), id = id, variant = variant, amount = 0 }
+            aggregated[key] = entry
+        end
+        entry.amount = entry.amount + itemAmount(data)
+    end)
+
+    local result = {}
+    for _, item in pairs(aggregated) do table.insert(result, item) end
+    return result
+end
+
+local function sumItemAmount(inv, targetNames)
+    if type(targetNames) == "string" then targetNames = { targetNames } end
+    local wanted = {}
+    for _, name in ipairs(targetNames) do wanted[tostring(name)] = true end
+
+    local total = 0
+    eachItem(inv, function(data)
+        if wanted[tostring(data.id)] then
+            total = total + itemAmount(data)
+        end
+    end)
+    return total
+end
+
+-- ---------- huge potion qua GUI (fallback) ----------
+local HUGE_POTION_IMAGE_ID = "16011869296"
+local lastHugePotionGuiCount = nil
+
+local function countHugePotionFromGui()
+    local ok, total = pcall(function()
+        local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        local inventoryGui = playerGui and (playerGui:FindFirstChild("Inventory")
+            or playerGui:WaitForChild("Inventory", 5))
+        if not playerGui or not inventoryGui then return nil end
+
+        local potionRoot = inventoryGui:FindFirstChild("Frame", true)
+        potionRoot = potionRoot and potionRoot:FindFirstChild("Main", true)
+        potionRoot = potionRoot and potionRoot:FindFirstChild("FilteredItems", true)
+        potionRoot = potionRoot and potionRoot:FindFirstChild("Filters", true)
+        potionRoot = potionRoot and potionRoot:FindFirstChild("Potion", true)
+        local root = potionRoot or inventoryGui
+
+        local amountTotal = 0
+        local found = 0
+        for _, slot in ipairs(root:GetDescendants()) do
+            if slot.Name == "ItemSlot" then
+                local icon = slot:FindFirstChild("Icon", true)
+                local quantity = slot:FindFirstChild("Quantity", true)
+                if icon and (icon:IsA("ImageLabel") or icon:IsA("ImageButton"))
+                    and tostring(icon.Image):find(HUGE_POTION_IMAGE_ID, 1, true) then
+                    local amount = quantity and tonumber((quantity.Text or ""):gsub(",", ""):match("%d+"))
+                    if amount then
+                        amountTotal = amountTotal + amount
+                        found = found + 1
+                    end
+                end
+            end
+        end
+        return found > 0 and amountTotal or nil
+    end)
+
+    if ok and total ~= nil then
+        lastHugePotionGuiCount = total
+        return total
+    end
+    return lastHugePotionGuiCount
+end
+
+-- ---------- collect ----------
+local function collectData()
+    local okCall, save = pcall(function() return SaveModule.Get() end)
+    if not okCall or type(save) ~= "table" or type(save.Inventory) ~= "table" then
+        return nil, "Save.Inventory unavailable"
+    end
+
+    local inv = save.Inventory
+    local currencies = {}
+
+    if type(inv.Currency) == "table" then
+        for _, c in pairs(inv.Currency) do
+            if type(c) == "table" and c.id ~= nil then
+                local id = tostring(c.id)
+                currencies[id] = (currencies[id] or 0) + itemAmount(c)
+            end
+        end
+    end
+
+    local pd = type(save.PlayerData) == "table" and save.PlayerData or {}
+    local rank = save.Rank or save.rank or save.PlayerRank or pd.Rank or pd.rank
+    local rebirths = save.Rebirths or save.rebirths or save.Rebirth or save.rebirth
+        or pd.Rebirths or pd.rebirths or pd.Rebirth
+
+    local hugePotion = sumItemAmount(inv, { "Huge", "Huge Potion" })
+    if hugePotion == 0 then
+        local guiCount = countHugePotionFromGui()
+        if guiCount == nil or guiCount == 0 then
+            task.wait(0.5)
+            guiCount = countHugePotionFromGui()
+        end
+        if guiCount ~= nil then hugePotion = guiCount end
+    end
+
+    return {
+        account = LocalPlayer.Name,
+        ts = nowMs(),
+        gems = currencies["Diamonds"] or 0,
+        coins = currencies["Coins"] or currencies["Coin"] or currencies["Money"] or 0,
+        currencies = currencies,
+        items = aggregateItems(inv),
+        rank = rank,
+        rebirths = rebirths,
+        hugePotion = hugePotion,
+        bucket = sumItemAmount(inv, { "Bucket" }),
+        bucketMagic = sumItemAmount(inv, {
+            "Bucket O' Magic", "Bucket o' Magic", "Bucket O Magic", "Bucket o Magic",
+        }),
+    }
+end
+
+-- ---------- disk queue (array, không ghi đè) ----------
+local function readQueue()
+    local readFn = getReadFile()
+    if not readFn then return {} end
+    local ok, raw = pcall(readFn, QUEUE_PATH)
+    if not ok or type(raw) ~= "string" or raw == "" then return {} end
+    local okDecode, data = pcall(function() return HttpService:JSONDecode(raw) end)
+    if not okDecode then return {} end
+    if type(data) ~= "table" then return {} end
+    if data.account then return { data } end          -- file kiểu v4 (1 object)
+    if #data == 0 then return {} end
+    local out = {}
+    for _, d in ipairs(data) do
+        if type(d) == "table" and d.account then table.insert(out, d) end
+    end
+    return out
+end
+
+local function writeQueue(list)
+    if not Config.LOCAL_LOGGING then return end
+    local writeFn = getWriteFile()
+    if not writeFn then return end
+    if #list == 0 then
+        pcall(writeFn, QUEUE_PATH, "")
+        return
+    end
+    local ok, encoded = pcall(function() return HttpService:JSONEncode(list) end)
+    if ok then pcall(writeFn, QUEUE_PATH, encoded) end
+end
+
+local function pushToDiskQueue(data, reason)
+    local list = readQueue()
+    for _, d in ipairs(list) do
+        if d.ts == data.ts then return end        -- đã có
+    end
+    table.insert(list, data)
+    while #list > Config.QUEUE_MAX do table.remove(list, 1) end
+    writeQueue(list)
+    log(string.format("Queued to disk (%s) | %d pending", tostring(reason), #list), "warn")
+end
+
+-- ---------- http ----------
+-- Trả về: ok, statusCode, bodyTable, errString
+local function postJson(path, payload)
+    local http = getHttp()
+    if not http then return false, nil, nil, "no executor request function" end
+
+    local okBody, encoded = pcall(function() return HttpService:JSONEncode(payload) end)
+    if not okBody then return false, nil, nil, "JSONEncode failed: " .. tostring(encoded) end
+
+    local ok, res = pcall(function()
+        return http({
+            Url = Config.WEB_SERVER .. path,
+            Method = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json",
+            },
+            Body = encoded,
+            Timeout = Config.TIMEOUT,
+        })
+    end)
+
+    if not ok then return false, nil, nil, tostring(res) end
+    if type(res) ~= "table" then return false, nil, nil, "empty response" end
+
+    local code = res.StatusCode or res.Status
+    local body = res.Body or res.body
+    local parsed = nil
+    if type(body) == "string" and body ~= "" then
+        local okDecode, decoded = pcall(function() return HttpService:JSONDecode(body) end)
+        if okDecode and type(decoded) == "table" then parsed = decoded end
+    elseif type(body) == "table" then
+        parsed = body
+    end
+
+    if code and code >= 200 and code < 300 then return true, code, parsed, nil end
+    return false, code, parsed, "HTTP " .. tostring(code)
+end
+
+local function uploadData(data, opts)
+    opts = opts or {}
+    if not data then return false end
+
+    if opts.restore then data.restore_deleted = true end
+
+    local bodySize = #HttpService:JSONEncode(data) / 1024
+    log(string.format(
+        "Upload %s | Gems: %s | Coins: %s | Items: %d | Rank: %s | RB: %s | Bucket: %s | BoM: %s | Potion: %s | %.1f KB",
+        tostring(data.account), formatNumber(data.gems), formatNumber(data.coins), #data.items,
+        tostring(data.rank or "-"), tostring(data.rebirths or "-"),
+        tostring(data.bucket or 0), tostring(data.bucketMagic or 0),
+        tostring(data.hugePotion or 0), bodySize
+    ), "info")
+
+    local sent, code, body, err = postJson("/api/ingest", data)
+
+    if not sent then
+        if code == 403 then
+            StopReason = "auth"
+            log("API key bị từ chối (403). Sửa Config.API_KEY rồi chạy lại.", "error")
+        else
+            log("Upload failed: " .. tostring(err or code), "warn")
+        end
+        FailCount = FailCount + 1
+        return false
+    end
+
+    -- server trả { ok, received, ingested, deleted, invalid, stale }
+    if type(body) == "table" then
+        local ingested = tonumber(body.ingested) or 0
+        local deleted  = tonumber(body.deleted) or 0
+        local stale    = tonumber(body.stale) or 0
+        local invalid  = tonumber(body.invalid) or 0
+
+        if deleted > 0 then
+            if Config.AUTO_RESTORE and not data.restore_deleted then
+                log("Account đang bị xóa (tombstone) trên server -> gửi lại với restore_deleted", "warn")
+                return uploadData(data, { restore = true })
+            end
+            StopReason = "deleted"
+            FailCount = FailCount + 1
+            log(string.format(
+                "Account '%s' đã bị xóa trên dashboard. Upload dừng. " ..
+                "Vào web bấm Restore, hoặc bật Config.AUTO_RESTORE = true.", tostring(data.account)
+            ), "error")
+            return false
+        end
+
+        if stale > 0 then
+            log("Server bỏ qua: data cũ hơn bản đã nhận (stale).", "warn")
+        end
+        if invalid > 0 then
+            log("Server bỏ qua: record không hợp lệ (invalid).", "warn")
+        end
+        if ingested == 0 and stale == 0 and invalid == 0 then
+            log("Server nhận 2xx nhưng không ingest record nào.", "warn")
+        end
+    end
+
+    UploadCount = UploadCount + 1
+    return true
+end
+
+local function flushDiskQueue()
+    local list = readQueue()
+    if #list == 0 then return end
+
+    local remaining = {}
+    for i, data in ipairs(list) do
+        if i > 1 then task.wait(0.1) end
+        -- giữ nguyên ts gốc -> server vẫn đánh giá đúng stale
+        if not uploadData(data) then
+            table.insert(remaining, data)
+            if StopReason then
+                for j = i + 1, #list do table.insert(remaining, list[j]) end
+                break
+            end
+        end
+    end
+    writeQueue(remaining)
+
+    if #remaining > 0 then
+        log(string.format("Còn %d record trong queue file", #remaining), "warn")
+    else
+        log("Flush queue file xong", "info")
+    end
+end
+
+local function processRetryQueue()
+    if #RetryQueue == 0 or StopReason then return end
+
+    local stillFailed = {}
+    for i, data in ipairs(RetryQueue) do
+        if i > 1 then task.wait(0.1) end
+        if not uploadData(data) then
+            table.insert(stillFailed, data)
+            if StopReason then
+                for j = i + 1, #RetryQueue do table.insert(stillFailed, RetryQueue[j]) end
+                break
+            end
+        end
+    end
+
+    RetryQueue = {}
+    local keep = math.min(#stillFailed, 5)
+    for i = #stillFailed - keep + 1, #stillFailed do
+        table.insert(RetryQueue, stillFailed[i])
+    end
+
+    if #RetryQueue > 0 then
+        log(string.format("Retry queue: %d pending (max 5)", #RetryQueue), "warn")
+    end
+end
+
+local function tickUpload()
+    local data, reason = collectData()
+    if not data then
+        log("collectData thất bại: " .. tostring(reason), "warn")
+        return
+    end
+    if not uploadData(data) then
+        if StopReason then
+            pushToDiskQueue(data, StopReason)
+        else
+            table.insert(RetryQueue, data)
+        end
+    end
+    processRetryQueue()
+end
+
+local function mainLoop()
+    flushDiskQueue()
+    tickUpload()
+
+    while true do
+        task.wait(Config.UPLOAD_INTERVAL)
+        if StopReason then
+            -- vẫn thử lại sau mỗi 5 phút, phòng khi admin đã restore trên web
+            if StopReason == "deleted" then
+                task.wait(300)
+                StopReason = nil
+            end
+        end
+        tickUpload()
+    end
+end
+
+-- ---------- startup ----------
+local function detectExecutor()
+    if syn then return "Synapse X" end
+    if fluxus then return "Fluxus" end
+    if Krnl then return "Krnl" end
+    if delta then return "Delta" end
+    if request or http_request then return "Executor (request)" end
+    return "Unknown"
+end
+
+local function checkHTTPMethods()
+    local methods = {}
+    if request then table.insert(methods, "request") end
+    if http_request then table.insert(methods, "http_request") end
+    if syn and syn.request then table.insert(methods, "syn.request") end
+    if fluxus and fluxus.request then table.insert(methods, "fluxus.request") end
+    if http and http.request then table.insert(methods, "http.request") end
+    if #methods == 0 then
+        if type(game.HttpGet) == "function" then table.insert(methods, "game:HttpGet(?)") end
+    end
+    return #methods > 0 and table.concat(methods, " + ") or "NONE"
+end
+
+if Config.AUTO_UPLOAD then
+    log("Executor: " .. detectExecutor(), "info")
+    log("HTTP Methods: " .. checkHTTPMethods(), "info")
+    log("Server: " .. Config.WEB_SERVER, "info")
+    log("Interval: " .. Config.UPLOAD_INTERVAL .. "s", "info")
+    log("Starting auto-upload...", "info")
+    task.spawn(mainLoop)
+else
+    log("Auto-upload disabled", "warn")
+    getgenv().TrackStatUpload = function(opts)
+        local data = collectData()
+        if data then return uploadData(data, opts) end
+        return false
+    end
+end
+
+getgenv().TrackStatStats = function()
+    return {
+        uploaded = UploadCount,
+        failed = FailCount,
+        retryQueue = #RetryQueue,
+        diskQueue = #readQueue(),
+        stopped = StopReason,
+        executor = detectExecutor(),
+        httpMethods = checkHTTPMethods(),
+        server = Config.WEB_SERVER,
+    }
+end
+
+getgenv().TrackStatRestore = function()
+    StopReason = nil
+    local data = collectData()
+    return data and uploadData(data, { restore = true }) or false
+end
+
+log("Call TrackStatStats() for stats, TrackStatRestore() to clear a tombstone", "info")
