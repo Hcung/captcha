@@ -12,11 +12,8 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 -- =========================================================
 
 local TARGET_PLACE_ID = 8737899170
-local HOP_TIME = 1200
+local HOP_TIME = 600
 local THREAD_COUNT = 4
--- So lan burst moi frame cua MOI luong (tong = THREAD_COUNT * BURST_PER_TICK burst / frame)
--- 1 = nhu ban cu. Neu bi kick / loi / khong nhanh hon thi ha xuong.
-local BURST_PER_TICK = 4
 local DELAY_TIME = 0.005
 
 local isWorking = true
@@ -121,7 +118,7 @@ end
 
 -- =========================================================
 -- [ SERVER HOP ]
--- Het HOP_TIME giay -> chay truc tiep full loadstring
+-- Het 360 giay -> chay truc tiep full loadstring
 -- =========================================================
 
 local function FastServerHop()
@@ -136,7 +133,7 @@ local function FastServerHop()
         RunService:Set3dRenderingEnabled(true)
     end)
 
-    print("[ServerHop] Het " .. tostring(HOP_TIME) .. " giay, dang chay Serverhop Low...")
+    print("[ServerHop] Het 360 giay, dang chay Serverhop Low...")
 
     local ok, err = pcall(function()
         loadstring(game:HttpGet(
@@ -223,16 +220,14 @@ spawn(function()
         end
     end)
 
-    -- Het HOP_TIME giay thi chay full loadstring Serverhop Low
+    -- Het 360 giay thi chay full loadstring Serverhop Low
     task.delay(HOP_TIME, FastServerHop)
 
-    -- Cac luong burst: moi frame ban BURST_PER_TICK lan
+    -- Cac luong burst
     for i = 1, THREAD_COUNT do
         spawn(function()
             while isWorking do
-                for _ = 1, BURST_PER_TICK do
-                    UltraBurstFire()
-                end
+                UltraBurstFire()
                 wait(DELAY_TIME)
             end
         end)
