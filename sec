@@ -14,6 +14,9 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 local TARGET_PLACE_ID = 8737899170
 local HOP_TIME = 600
 local THREAD_COUNT = 4
+-- So lan burst moi frame cua MOI luong (tong = THREAD_COUNT * BURST_PER_TICK burst / frame)
+-- 1 = nhu ban cu. Neu bi kick / loi / khong nhanh hon thi ha xuong.
+local BURST_PER_TICK = 4
 local DELAY_TIME = 0.005
 
 local isWorking = true
@@ -118,8 +121,121 @@ end
 
 -- =========================================================
 -- [ SERVER HOP ]
--- Het 360 giay -> chay truc tiep full loadstring
+-- Het HOP_TIME giay -> hop sang server NGAU NHIEN
 -- =========================================================
+
+local HttpService = game:GetService("HttpService")
+local HOP_MAX_PAGES = 3
+local HOP_TELEPORT_WAIT = 15
+-- Bo qua server DA FULL khi lay danh sach (van chon ngau nhien trong so con lai). false = lay ca server full
+local HOP_EXCLUDE_FULL = true
+-- "Asc" = server it nguoi truoc, "Desc" = server dong nguoi truoc (mac dinh cua Roblox, hay ra server gan full)
+local HOP_SORT = "Asc"
+
+-- Chon NGAU NHIEN bat ky server nao (chi bo qua server hien tai), khong loc logic nao khac
+local function fetchServerIds()
+    local ids, cursor = {}, nil
+
+    for _ = 1, HOP_MAX_PAGES do
+        local url = string.format(
+            "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=%s&limit=100&excludeFullGames=%s",
+            game.PlaceId, HOP_SORT, tostring(HOP_EXCLUDE_FULL)
+        ) .. (cursor and ("&cursor=" .. cursor) or "")
+
+        local ok, res = pcall(function()
+            return HttpService:JSONDecode(game:HttpGet(url))
+        end)
+
+        if not ok or type(res) ~= "table" or type(res.data) ~= "table" then
+            break
+        end
+
+        for _, server in ipairs(res.data) do
+            if server.id ~= game.JobId then
+                ids[#ids + 1] = server.id
+            end
+        end
+
+        cursor = res.nextPageCursor
+        if not cursor then break end
+        wait(0.3)
+    end
+
+    return ids
+end
+
+local function findErrorPrompt()
+    local ok, prompt = pcall(function()
+        local gui = game:GetService("CoreGui"):FindFirstChild("RobloxPromptGui")
+        local overlay = gui and gui:FindFirstChild("promptOverlay")
+        return overlay and overlay:FindFirstChild("ErrorPrompt")
+    end)
+    return ok and prompt or nil
+end
+
+local function RandomServerHop()
+    -- Chi cho phep 1 vong hop chay cung luc (2 script hop cung goi teleport se huy lan nhau)
+    local env = (getgenv and getgenv()) or _G
+    if env.__HOP_ACTIVE and os.clock() - env.__HOP_ACTIVE < 30 then
+        print("[ServerHop] Da co vong hop khac dang chay, bo qua")
+        return
+    end
+
+    math.randomseed(os.time() + math.floor(os.clock() * 1000))
+
+    local pool = {}
+
+    -- Bat TeleportInitFailed (server full / bi tu choi) de phat hien som hon
+    local teleportFailed = false
+    local conn = TeleportService.TeleportInitFailed:Connect(function(player)
+        if player == LocalPlayer then
+            teleportFailed = true
+        end
+    end)
+
+    while true do
+        env.__HOP_ACTIVE = os.clock()
+        if #pool == 0 then
+            pool = fetchServerIds()
+        end
+
+        teleportFailed = false
+
+        if #pool > 0 then
+            -- lay ngau nhien 1 server ra khoi pool (server da thu khong bi chon lai)
+            local pick = table.remove(pool, math.random(1, #pool))
+            print("[ServerHop] → server " .. pick:sub(1, 8) .. " (con " .. #pool .. " server trong danh sach)")
+            pcall(function()
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, pick, LocalPlayer)
+            end)
+        else
+            print("[ServerHop] Khong lay duoc danh sach, teleport thuong")
+            pcall(function()
+                TeleportService:Teleport(game.PlaceId, LocalPlayer)
+            end)
+        end
+
+        -- Cho ket qua: hien ErrorPrompt (server full...) hoac TeleportInitFailed => that bai
+        local started = os.clock()
+        local failed = false
+        while os.clock() - started < HOP_TELEPORT_WAIT do
+            local prompt = findErrorPrompt()
+            if prompt or teleportFailed then
+                print("[ServerHop] ⚠️ Server full / teleport loi → doi 3s roi chon server khac")
+                if prompt then pcall(function() prompt:Destroy() end) end
+                failed = true
+                break
+            end
+            wait(0.25)
+        end
+
+        if failed then
+            wait(3)
+        else
+            print("[ServerHop] Van o server cu, thu server khac...")
+        end
+    end
+end
 
 local function FastServerHop()
     if not isWorking then
@@ -133,17 +249,9 @@ local function FastServerHop()
         RunService:Set3dRenderingEnabled(true)
     end)
 
-    print("[ServerHop] Het 360 giay, dang chay Serverhop Low...")
+    print("[ServerHop] Het " .. tostring(HOP_TIME) .. " giay, hop random server...")
 
-    local ok, err = pcall(function()
-        loadstring(game:HttpGet(
-            'https://raw.githubusercontent.com/Paule1248/Open-Source/refs/heads/main/Utils/Serverhop%20Low'
-        ))()
-    end)
-
-    if not ok then
-        warn("[ServerHop] Loi khi chay Serverhop Low: " .. tostring(err))
-    end
+    RandomServerHop()
 end
 
 -- =========================================================
@@ -220,14 +328,16 @@ spawn(function()
         end
     end)
 
-    -- Het 360 giay thi chay full loadstring Serverhop Low
+    -- Het HOP_TIME giay thi hop random server
     task.delay(HOP_TIME, FastServerHop)
 
-    -- Cac luong burst
+    -- Cac luong burst: moi frame ban BURST_PER_TICK lan
     for i = 1, THREAD_COUNT do
         spawn(function()
             while isWorking do
-                UltraBurstFire()
+                for _ = 1, BURST_PER_TICK do
+                    UltraBurstFire()
+                end
                 wait(DELAY_TIME)
             end
         end)
