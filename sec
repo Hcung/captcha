@@ -13,10 +13,10 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 local TARGET_PLACE_ID = 8737899170
 local HOP_TIME = 600
-local THREAD_COUNT = 4
+local THREAD_COUNT = 6
 -- So lan burst moi frame cua MOI luong (tong = THREAD_COUNT * BURST_PER_TICK burst / frame)
 -- 1 = nhu ban cu. Neu bi kick / loi / khong nhanh hon thi ha xuong.
-local BURST_PER_TICK = 4
+local BURST_PER_TICK = 6
 local DELAY_TIME = 0.005
 
 local isWorking = true
