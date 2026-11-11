@@ -1,7 +1,10 @@
+
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local CoreGui = game:GetService("CoreGui")
 
 local Network = ReplicatedStorage:WaitForChild("Network")
 local LocalPlayer = Players.LocalPlayer
@@ -12,12 +15,22 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 -- =========================================================
 
 local TARGET_PLACE_ID = 8737899170
+
 local HOP_TIME = 600
-local THREAD_COUNT = 4
--- So lan burst moi frame cua MOI luong (tong = THREAD_COUNT * BURST_PER_TICK burst / frame)
--- 1 = nhu ban cu. Neu bi kick / loi / khong nhanh hon thi ha xuong.
-local BURST_PER_TICK = 1.5
-local DELAY_TIME = 0.01
+local THREAD_COUNT = 5
+local DELAY_TIME = 0
+
+-- Random Server Hop
+local HOP_MAX_PAGES = 3
+local HOP_TELEPORT_WAIT = 15
+local HOP_RETRY_DELAY = 3
+local HOP_PAGE_DELAY = 0.3
+
+-- false = lấy cả server full, để Teleport tự xác định
+local HOP_EXCLUDE_FULL = false
+
+-- Lấy cả hai đầu danh sách để mở rộng pool ứng viên
+local HOP_SORT_ORDERS = {"Asc", "Desc"}
 
 local isWorking = true
 local hopDeadline = nil
@@ -38,8 +51,8 @@ local S_CR1, S_CR2, S_SC =
 
 -- =========================================================
 -- [ TRACK INVENTORY ]
--- Chi doc item truc tiep trong category chi dinh.
--- Khong quet de quy / khong doc noi dung Item Box.
+-- Chỉ đọc item trực tiếp trong category chỉ định.
+-- Không quét đệ quy / không đọc nội dung Item Box.
 -- =========================================================
 
 local SaveModule = require(
@@ -120,143 +133,301 @@ local function UltraBurstFire()
 end
 
 -- =========================================================
--- [ SERVER HOP ]
--- Het HOP_TIME giay -> hop sang server NGAU NHIEN
+-- [ RANDOM SERVER FETCHER ]
+-- Lấy server từ Roblox Public Servers API.
+-- Chỉ bỏ qua JobId hiện tại và loại ID trùng.
+-- Không lọc theo player count.
 -- =========================================================
 
-local HttpService = game:GetService("HttpService")
-local HOP_MAX_PAGES = 3
-local HOP_TELEPORT_WAIT = 15
--- Bo qua server DA FULL khi lay danh sach (van chon ngau nhien trong so con lai). false = lay ca server full
-local HOP_EXCLUDE_FULL = true
--- "Asc" = server it nguoi truoc, "Desc" = server dong nguoi truoc (mac dinh cua Roblox, hay ra server gan full)
-local HOP_SORT = "Asc"
-
--- Chon NGAU NHIEN bat ky server nao (chi bo qua server hien tai), khong loc logic nao khac
 local function fetchServerIds()
-    local ids, cursor = {}, nil
+    local ids = {}
+    local seen = {}
 
-    for _ = 1, HOP_MAX_PAGES do
-        local url = string.format(
-            "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=%s&limit=100&excludeFullGames=%s",
-            game.PlaceId, HOP_SORT, tostring(HOP_EXCLUDE_FULL)
-        ) .. (cursor and ("&cursor=" .. cursor) or "")
+    for _, sortOrder in ipairs(HOP_SORT_ORDERS) do
+        local cursor = nil
 
-        local ok, res = pcall(function()
-            return HttpService:JSONDecode(game:HttpGet(url))
-        end)
+        for page = 1, HOP_MAX_PAGES do
+            local url = string.format(
+                "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=%s&limit=100&excludeFullGames=%s",
+                TARGET_PLACE_ID,
+                sortOrder,
+                tostring(HOP_EXCLUDE_FULL)
+            )
 
-        if not ok or type(res) ~= "table" or type(res.data) ~= "table" then
-            break
-        end
-
-        for _, server in ipairs(res.data) do
-            if server.id ~= game.JobId then
-                ids[#ids + 1] = server.id
+            if cursor then
+                url = url .. "&cursor=" .. HttpService:UrlEncode(cursor)
             end
-        end
 
-        cursor = res.nextPageCursor
-        if not cursor then break end
-        wait(0.3)
+            local ok, response = pcall(function()
+                local body = game:HttpGet(url)
+                return HttpService:JSONDecode(body)
+            end)
+
+            if not ok
+                or type(response) ~= "table"
+                or type(response.data) ~= "table" then
+
+                warn(
+                    "[ServerHop] Fetch failed:",
+                    sortOrder,
+                    "page",
+                    page,
+                    tostring(response)
+                )
+
+                break
+            end
+
+            for _, server in ipairs(response.data) do
+                local jobId = tostring(server.id or "")
+
+                if jobId ~= ""
+                    and jobId ~= game.JobId
+                    and not seen[jobId] then
+
+                    seen[jobId] = true
+                    ids[#ids + 1] = jobId
+                end
+            end
+
+            cursor = response.nextPageCursor
+
+            if type(cursor) ~= "string" or cursor == "" then
+                break
+            end
+
+            wait(HOP_PAGE_DELAY)
+        end
     end
+
+    print(
+        "[ServerHop] Fetch completed. Candidates:",
+        #ids
+    )
 
     return ids
 end
 
+-- =========================================================
+-- [ ERROR PROMPT DETECTION ]
+-- =========================================================
+
 local function findErrorPrompt()
     local ok, prompt = pcall(function()
-        local gui = game:GetService("CoreGui"):FindFirstChild("RobloxPromptGui")
+        local gui = CoreGui:FindFirstChild("RobloxPromptGui")
         local overlay = gui and gui:FindFirstChild("promptOverlay")
+
         return overlay and overlay:FindFirstChild("ErrorPrompt")
     end)
-    return ok and prompt or nil
+
+    if ok then
+        return prompt
+    end
+
+    return nil
 end
 
+-- =========================================================
+-- [ RANDOM SERVER HOP ]
+--
+-- 1. Fetch server list
+-- 2. Chọn JobId ngẫu nhiên
+-- 3. Bỏ JobId vừa thử
+-- 4. Teleport
+-- 5. Nếu lỗi: đợi 3s và thử server khác
+-- 6. Hết pool thì fetch lại
+-- =========================================================
+
 local function RandomServerHop()
-    -- Chi cho phep 1 vong hop chay cung luc (2 script hop cung goi teleport se huy lan nhau)
     local env = (getgenv and getgenv()) or _G
-    if env.__HOP_ACTIVE and os.clock() - env.__HOP_ACTIVE < 30 then
-        print("[ServerHop] Da co vong hop khac dang chay, bo qua")
+
+    -- Chỉ cho phép một vòng Server Hop chạy cùng lúc
+    if env.__HOP_ACTIVE then
+        print("[ServerHop] Another hop process is already running")
         return
     end
 
-    math.randomseed(os.time() + math.floor(os.clock() * 1000))
+    env.__HOP_ACTIVE = true
+
+    math.randomseed(
+        os.time() + math.floor(os.clock() * 100000)
+    )
 
     local pool = {}
+    local attempted = {}
 
-    -- Bat TeleportInitFailed (server full / bi tu choi) de phat hien som hon
     local teleportFailed = false
-    local conn = TeleportService.TeleportInitFailed:Connect(function(player)
-        if player == LocalPlayer then
-            teleportFailed = true
+
+    local connection = TeleportService.TeleportInitFailed:Connect(
+        function(player)
+            if player == LocalPlayer then
+                teleportFailed = true
+            end
+        end
+    )
+
+    local function refreshPool()
+        print("[ServerHop] Fetching random server candidates...")
+
+        local newPool = fetchServerIds()
+        local available = {}
+
+        -- Không thử lại các JobId đã thất bại trong batch hiện tại
+        for _, jobId in ipairs(newPool) do
+            if not attempted[jobId] then
+                available[#available + 1] = jobId
+            end
+        end
+
+        -- Đã thử hết candidate: reset blacklist của batch
+        if #available == 0 and #newPool > 0 then
+            print("[ServerHop] All candidates attempted. Resetting batch.")
+
+            attempted = {}
+            available = newPool
+        end
+
+        pool = available
+
+        print(
+            "[ServerHop] Available random servers:",
+            #pool
+        )
+    end
+
+    local success, err = pcall(function()
+        while true do
+            -- Pool hết thì lấy danh sách mới
+            if #pool == 0 then
+                refreshPool()
+            end
+
+            -- Không fetch được server nào
+            if #pool == 0 then
+                warn("[ServerHop] No server candidates. Retry in 3s...")
+                wait(HOP_RETRY_DELAY)
+                continue
+            end
+
+            -- Lấy ngẫu nhiên một JobId
+            local randomIndex = math.random(1, #pool)
+            local pickedJobId = table.remove(pool, randomIndex)
+
+            attempted[pickedJobId] = true
+            teleportFailed = false
+
+            print(
+                "[ServerHop] → Random server:",
+                pickedJobId,
+                "| Remaining:",
+                #pool
+            )
+
+            -- Thực hiện Teleport
+            local callOk, callErr = pcall(function()
+                TeleportService:TeleportToPlaceInstance(
+                    TARGET_PLACE_ID,
+                    pickedJobId,
+                    LocalPlayer
+                )
+            end)
+
+            local failed = not callOk
+
+            if not callOk then
+                warn(
+                    "[ServerHop] Teleport call error:",
+                    tostring(callErr)
+                )
+            end
+
+            -- Chờ kết quả Teleport / ErrorPrompt
+            if not failed then
+                local started = os.clock()
+
+                while os.clock() - started < HOP_TELEPORT_WAIT do
+                    local prompt = findErrorPrompt()
+
+                    if prompt or teleportFailed then
+                        print(
+                            "[ServerHop] Teleport failed / ErrorPrompt detected"
+                        )
+
+                        if prompt then
+                            pcall(function()
+                                prompt:Destroy()
+                            end)
+                        end
+
+                        failed = true
+                        break
+                    end
+
+                    wait(0.25)
+                end
+            end
+
+            if failed then
+                print(
+                    "[ServerHop] Failed server:",
+                    pickedJobId,
+                    "| Retry in 3 seconds"
+                )
+
+                wait(HOP_RETRY_DELAY)
+            else
+                print(
+                    "[ServerHop] No transition detected after",
+                    HOP_TELEPORT_WAIT,
+                    "seconds. Trying another server..."
+                )
+
+                wait(HOP_RETRY_DELAY)
+            end
         end
     end)
 
-    while true do
-        env.__HOP_ACTIVE = os.clock()
-        if #pool == 0 then
-            pool = fetchServerIds()
-        end
+    -- Dọn kết nối nếu vòng hop bị dừng do lỗi
+    if connection then
+        connection:Disconnect()
+    end
 
-        teleportFailed = false
+    env.__HOP_ACTIVE = nil
 
-        if #pool > 0 then
-            -- lay ngau nhien 1 server ra khoi pool (server da thu khong bi chon lai)
-            local pick = table.remove(pool, math.random(1, #pool))
-            print("[ServerHop] → server " .. pick:sub(1, 8) .. " (con " .. #pool .. " server trong danh sach)")
-            pcall(function()
-                TeleportService:TeleportToPlaceInstance(game.PlaceId, pick, LocalPlayer)
-            end)
-        else
-            print("[ServerHop] Khong lay duoc danh sach, teleport thuong")
-            pcall(function()
-                TeleportService:Teleport(game.PlaceId, LocalPlayer)
-            end)
-        end
-
-        -- Cho ket qua: hien ErrorPrompt (server full...) hoac TeleportInitFailed => that bai
-        local started = os.clock()
-        local failed = false
-        while os.clock() - started < HOP_TELEPORT_WAIT do
-            local prompt = findErrorPrompt()
-            if prompt or teleportFailed then
-                print("[ServerHop] ⚠️ Server full / teleport loi → doi 3s roi chon server khac")
-                if prompt then pcall(function() prompt:Destroy() end) end
-                failed = true
-                break
-            end
-            wait(0.25)
-        end
-
-        if failed then
-            wait(3)
-        else
-            print("[ServerHop] Van o server cu, thu server khac...")
-        end
+    if not success then
+        warn("[ServerHop] RandomServerHop stopped:", tostring(err))
     end
 end
+
+-- =========================================================
+-- [ START SERVER HOP ]
+-- Thay thế hoàn toàn loadstring Serverhop Low.
+-- =========================================================
 
 local function FastServerHop()
     if not isWorking then
         return
     end
 
-    -- Dung cac luong burst truoc khi hop
+    -- Dừng tất cả Burst Thread
     isWorking = false
 
     pcall(function()
         RunService:Set3dRenderingEnabled(true)
     end)
 
-    print("[ServerHop] Het " .. tostring(HOP_TIME) .. " giay, hop random server...")
+    print(
+        "[ServerHop] Hết",
+        HOP_TIME,
+        "giây. Starting Random Server Hop..."
+    )
 
+    -- Chạy trực tiếp Random Server Hop
     RandomServerHop()
 end
 
 -- =========================================================
 -- [ UI ]
--- Dung PlayerGui de tuong thich voi Real Executor
 -- =========================================================
 
 pcall(function()
@@ -285,6 +456,7 @@ Label.TextWrapped = false
 Label.TextXAlignment = Enum.TextXAlignment.Left
 Label.TextYAlignment = Enum.TextYAlignment.Top
 Label.Text = "RAM RESET MODE\nLoading inventory..."
+
 Label.Parent = ScreenGui
 
 local Padding = Instance.new("UIPadding")
@@ -305,7 +477,7 @@ ScreenGui.Parent = PlayerGui
 spawn(function()
     wait(5)
 
-    -- Bat dau tinh thoi gian sau khi khoi dong
+    -- Bắt đầu countdown sau khi khởi động
     hopDeadline = tick() + HOP_TIME
 
     pcall(function()
@@ -317,7 +489,7 @@ spawn(function()
             Enum.EnviromentalPhysicsThrottle.Disabled
     end)
 
-    -- Don rac dinh ky
+    -- Garbage Collection định kỳ
     spawn(function()
         while isWorking do
             wait(30)
@@ -328,16 +500,14 @@ spawn(function()
         end
     end)
 
-    -- Het HOP_TIME giay thi hop random server
+    -- Hết thời gian thì chuyển sang Random Server Hop
     task.delay(HOP_TIME, FastServerHop)
 
-    -- Cac luong burst: moi frame ban BURST_PER_TICK lan
+    -- Các luồng Burst
     for i = 1, THREAD_COUNT do
         spawn(function()
             while isWorking do
-                for _ = 1, BURST_PER_TICK do
-                    UltraBurstFire()
-                end
+                UltraBurstFire()
                 wait(DELAY_TIME)
             end
         end)
@@ -349,7 +519,7 @@ end)
 -- =========================================================
 
 spawn(function()
-    while isWorking and ScreenGui.Parent do
+    while ScreenGui.Parent do
         local timeLeft = HOP_TIME
 
         if hopDeadline then
@@ -360,7 +530,14 @@ spawn(function()
         end
 
         local counts, loaded = getTrackCounts()
-        local status = loaded and "LIVE" or "WAITING FOR DATA"
+
+        local status
+
+        if not isWorking then
+            status = "HOPPING"
+        else
+            status = loaded and "LIVE" or "WAITING FOR DATA"
+        end
 
         Label.Text = string.format(
             "RAM RESET MODE [%s]\n" ..
