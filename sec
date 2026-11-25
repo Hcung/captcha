@@ -17,7 +17,7 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 local TARGET_PLACE_ID = 8737899170
 
 local HOP_TIME = 600
-local THREAD_COUNT = 5
+local THREAD_COUNT = 10
 local DELAY_TIME = 0
 
 -- Random Server Hop
@@ -33,7 +33,11 @@ local HOP_EXCLUDE_FULL = false
 local HOP_SORT_ORDERS = {"Asc", "Desc"}
 
 local isWorking = true
+local stopHop = false
+local phase = "FARMING" -- "FARMING" | "OPENING_BAGS" | "DONE" | "HOPPING"
 local hopDeadline = nil
+local bagLoopStarted = false
+local ScreenGui = nil
 
 local spawn = task.spawn
 local wait = task.wait
@@ -63,12 +67,16 @@ local SaveModule = require(
 
 local TRACK_CATEGORIES = {
     Misc = {
-        ["Secret Key"] = "Secret Key",
+        ["Secret Key"]  = "Secret Key",
+        ["Tech Key"]    = "Tech Key",
+        ["Crystal Key"] = "Crystal Key",
     },
 
     Charm = {
-        ["Royalty Charm"] = "Royalty",
-        ["Overload Charm"] = "Overload",
+        ["Royalty Charm"]    = "Royalty",
+        ["Overload Charm"]   = "Overload",
+        ["XP Charm"]         = "XP",
+        ["Glittering Charm"] = "Glittering",
     },
 
     Potion = {
@@ -76,12 +84,64 @@ local TRACK_CATEGORIES = {
     },
 }
 
+local RAP_PRICES = {
+    ["Royalty Charm"]    = 4600000,   -- 4.6m/1
+    ["Overload Charm"]   = 4400000,   -- 4.4m/1
+    ["XP Charm"]         = 67000,     -- 67k/1
+    ["Glittering Charm"] = 67000,     -- 67k/1
+    ["Tech Key"]         = 11000,     -- 11k/1
+    ["Crystal Key"]      = 10000,     -- 10k/1
+    ["The Cocktail"]     = 155000,    -- 155k/1
+    ["Huge Normal"]      = 22500000,  -- 22.5m/1
+    ["Huge Golden"]      = 48000000,  -- 48m/1
+}
+
+local GIFT_BAGS = {
+    { id = "Mini Chest",     batch = 300 },
+    { id = "Charm Stone",    batch = 100 },
+    { id = "Large Gift Bag", batch = 100 },
+    { id = "Gift Bag",       batch = 100 },
+}
+
+local function formatNumber(n)
+    local s = tostring(math.floor(tonumber(n) or 0))
+    local formatted = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+    if formatted:sub(1, 1) == "," then
+        formatted = formatted:sub(2)
+    end
+    return formatted
+end
+
+local function formatRap(val)
+    local v = tonumber(val) or 0
+    if v >= 1e9 then
+        return string.format("%.2fb", v / 1e9)
+    elseif v >= 1e6 then
+        return string.format("%.2fm", v / 1e6)
+    elseif v >= 1e3 then
+        return string.format("%.1fk", v / 1e3)
+    end
+    return tostring(math.floor(v))
+end
+
 local function getTrackCounts()
     local counts = {
-        ["Secret Key"] = 0,
-        ["Royalty Charm"] = 0,
-        ["Overload Charm"] = 0,
-        ["The Cocktail"] = 0,
+        ["Secret Key"]       = 0,
+        ["Royalty Charm"]    = 0,
+        ["Overload Charm"]   = 0,
+        ["XP Charm"]         = 0,
+        ["Glittering Charm"] = 0,
+        ["Tech Key"]         = 0,
+        ["Crystal Key"]      = 0,
+        ["The Cocktail"]     = 0,
+        ["Huge Normal"]      = 0,
+        ["Huge Golden"]      = 0,
+    }
+    local bagCounts = {
+        ["Mini Chest"]     = 0,
+        ["Charm Stone"]    = 0,
+        ["Large Gift Bag"] = 0,
+        ["Gift Bag"]       = 0,
     }
 
     local ok, loaded = pcall(function()
@@ -106,6 +166,24 @@ local function getTrackCounts()
                                     tonumber(item._am) or 1
                             end
                         end
+
+                        if category == "Misc" and bagCounts[id] ~= nil then
+                            bagCounts[id] += tonumber(item._am) or 1
+                        end
+                    end
+                end
+            end
+        end
+
+        local pets = inventory.Pet
+        if type(pets) == "table" then
+            for _, item in pairs(pets) do
+                if type(item) == "table" and tostring(item.id or "") == "Huge Lumi Axolotl" then
+                    local am = tonumber(item._am) or 1
+                    if item.pt == 1 then
+                        counts["Huge Golden"] += am
+                    elseif item.pt == nil or item.pt == 0 then
+                        counts["Huge Normal"] += am
                     end
                 end
             end
@@ -115,10 +193,15 @@ local function getTrackCounts()
     end)
 
     if not ok or loaded ~= true then
-        return counts, false
+        return counts, bagCounts, 0, false
     end
 
-    return counts, true
+    local totalRap = 0
+    for itemName, unitRap in pairs(RAP_PRICES) do
+        totalRap += (counts[itemName] or 0) * unitRap
+    end
+
+    return counts, bagCounts, totalRap, true
 end
 
 -- =========================================================
@@ -405,12 +488,13 @@ end
 -- =========================================================
 
 local function FastServerHop()
-    if not isWorking then
+    if not isWorking or stopHop then
         return
     end
 
     -- Dừng tất cả Burst Thread
     isWorking = false
+    phase = "HOPPING"
 
     pcall(function()
         RunService:Set3dRenderingEnabled(true)
@@ -427,6 +511,92 @@ local function FastServerHop()
 end
 
 -- =========================================================
+-- [ OPEN GIFT BAGS WHEN OUT OF SECRET KEYS ]
+-- =========================================================
+
+local function clearCameraParts()
+    pcall(function()
+        local cam = workspace.CurrentCamera or workspace:FindFirstChild("Camera")
+        if not cam then return end
+        for _, v in ipairs(cam:GetChildren()) do
+            if v.ClassName == "Part" then
+                v:Destroy()
+            end
+        end
+    end)
+end
+
+local function openAllGiftBags()
+    if bagLoopStarted then
+        return
+    end
+    bagLoopStarted = true
+    stopHop = true
+    isWorking = false
+    phase = "OPENING_BAGS"
+
+    pcall(function()
+        RunService:Set3dRenderingEnabled(true)
+    end)
+
+    local GiftBagOpen = Network:WaitForChild("GiftBag_Open", 10)
+    if not GiftBagOpen then
+        warn("[GiftBag] Không tìm thấy Network.GiftBag_Open")
+        phase = "DONE"
+        return
+    end
+
+    print("[GiftBag] Hết Secret Key -> bắt đầu mở Mini Chest, Charm Stone, Large Gift Bag, Gift Bag...")
+
+    local lastTotal = -1
+    local stallCount = 0
+
+    while ScreenGui.Parent do
+        local _, bagCounts, _, loaded = getTrackCounts()
+        if not loaded then
+            wait(0.5)
+            continue
+        end
+
+        local totalLeft = 0
+        for _, bag in ipairs(GIFT_BAGS) do
+            totalLeft += (bagCounts[bag.id] or 0)
+        end
+
+        if totalLeft <= 0 then
+            clearCameraParts()
+            break
+        end
+
+        if totalLeft == lastTotal then
+            stallCount += 1
+            if stallCount >= 40 then
+                warn("[GiftBag] Dừng do số lượng bag không giảm sau nhiều lần thử:", totalLeft)
+                break
+            end
+        else
+            lastTotal = totalLeft
+            stallCount = 0
+        end
+
+        for _, bag in ipairs(GIFT_BAGS) do
+            local amt = bagCounts[bag.id] or 0
+            if amt > 0 then
+                pcall(function()
+                    GiftBagOpen:InvokeServer(bag.id, math.min(amt, bag.batch))
+                end)
+            end
+        end
+
+        clearCameraParts()
+        wait(0.15)
+    end
+
+    phase = "DONE"
+    print("[GiftBag] Đã mở xong toàn bộ Gift Bag / Mini Chest / Charm Stone. Dừng (không hop server).")
+end
+
+-- =========================================================
 -- [ UI ]
 -- =========================================================
 
@@ -438,19 +608,20 @@ pcall(function()
     end
 end)
 
-local ScreenGui = Instance.new("ScreenGui")
+ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "RAMResetTrackUI"
 ScreenGui.ResetOnSpawn = false
 
 local Label = Instance.new("TextLabel")
 Label.Name = "TrackLabel"
-Label.Size = UDim2.new(0, 350, 0, 175)
+Label.Size = UDim2.new(0, 410, 0, 0)
+Label.AutomaticSize = Enum.AutomaticSize.Y
 Label.Position = UDim2.new(0.02, 0, 0.05, 0)
 Label.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
 Label.BackgroundTransparency = 0.12
 Label.TextColor3 = Color3.fromRGB(0, 255, 255)
 Label.Font = Enum.Font.Code
-Label.TextSize = 16
+Label.TextSize = 15
 Label.TextScaled = false
 Label.TextWrapped = false
 Label.TextXAlignment = Enum.TextXAlignment.Left
@@ -461,7 +632,9 @@ Label.Parent = ScreenGui
 
 local Padding = Instance.new("UIPadding")
 Padding.PaddingLeft = UDim.new(0, 10)
+Padding.PaddingRight = UDim.new(0, 10)
 Padding.PaddingTop = UDim.new(0, 8)
+Padding.PaddingBottom = UDim.new(0, 8)
 Padding.Parent = Label
 
 local Corner = Instance.new("UICorner")
@@ -476,6 +649,10 @@ ScreenGui.Parent = PlayerGui
 
 spawn(function()
     wait(5)
+
+    if not isWorking or stopHop or bagLoopStarted then
+        return
+    end
 
     -- Bắt đầu countdown sau khi khởi động
     hopDeadline = tick() + HOP_TIME
@@ -529,31 +706,66 @@ spawn(function()
             )
         end
 
-        local counts, loaded = getTrackCounts()
+        local counts, bagCounts, totalRap, loaded = getTrackCounts()
+
+        if loaded and counts["Secret Key"] <= 0 and not bagLoopStarted and phase == "FARMING" then
+            spawn(openAllGiftBags)
+        end
 
         local status
+        local footerLine
 
-        if not isWorking then
+        if phase == "OPENING_BAGS" then
+            status = "OPENING BAGS"
+            footerLine = string.format(
+                "MC:%d | CS:%d | LGB:%d | GB:%d",
+                bagCounts["Mini Chest"] or 0,
+                bagCounts["Charm Stone"] or 0,
+                bagCounts["Large Gift Bag"] or 0,
+                bagCounts["Gift Bag"] or 0
+            )
+        elseif phase == "DONE" then
+            status = "DONE (NO HOP)"
+            footerLine = "FINISHED - NO SERVER HOP"
+        elseif phase == "HOPPING" or not isWorking then
             status = "HOPPING"
+            footerLine = "SERVER HOPPING..."
         else
             status = loaded and "LIVE" or "WAITING FOR DATA"
+            footerLine = string.format("NEXT SERVER HOP: %ds", timeLeft)
         end
 
         Label.Text = string.format(
             "RAM RESET MODE [%s]\n" ..
-            "--------------------------------\n" ..
-            "Secret Key:     %s\n" ..
-            "Royalty Charm:  %s\n" ..
-            "Overload Charm: %s\n" ..
-            "The Cocktail:   %s\n" ..
-            "--------------------------------\n" ..
-            "NEXT SERVER HOP: %ds",
+            "------------------------------------\n" ..
+            "Secret Key:       %s\n" ..
+            "Royalty Charm:    %s  (4.6m/1)\n" ..
+            "Overload Charm:   %s  (4.4m/1)\n" ..
+            "XP Charm:         %s  (67k/1)\n" ..
+            "Glittering Charm: %s  (67k/1)\n" ..
+            "Tech Key:         %s  (11k/1)\n" ..
+            "Crystal Key:      %s  (10k/1)\n" ..
+            "The Cocktail:     %s  (155k/1)\n" ..
+            "Huge Normal:      %s  (22.5m/1)\n" ..
+            "Huge Golden:      %s  (48m/1)\n" ..
+            "------------------------------------\n" ..
+            "Total RAP:        %s (%s)\n" ..
+            "------------------------------------\n" ..
+            "%s",
             status,
-            tostring(counts["Secret Key"]),
-            tostring(counts["Royalty Charm"]),
-            tostring(counts["Overload Charm"]),
-            tostring(counts["The Cocktail"]),
-            timeLeft
+            formatNumber(counts["Secret Key"]),
+            formatNumber(counts["Royalty Charm"]),
+            formatNumber(counts["Overload Charm"]),
+            formatNumber(counts["XP Charm"]),
+            formatNumber(counts["Glittering Charm"]),
+            formatNumber(counts["Tech Key"]),
+            formatNumber(counts["Crystal Key"]),
+            formatNumber(counts["The Cocktail"]),
+            formatNumber(counts["Huge Normal"]),
+            formatNumber(counts["Huge Golden"]),
+            formatRap(totalRap),
+            formatNumber(totalRap),
+            footerLine
         )
 
         wait(1)
