@@ -17,7 +17,7 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 local TARGET_PLACE_ID = 8737899170
 
 local HOP_TIME = 600
-local THREAD_COUNT = 10
+local THREAD_COUNT = 5
 local DELAY_TIME = 0
 
 -- Random Server Hop
